@@ -53,9 +53,13 @@
     async function loadStudents() {
       const querySnapshot = await getDocs(collection(db, "students"));
       let html = "";
+      const studentSelect = document.getElementById('resultStudent');
+      studentSelect.replaceChildren(new Option("Select a student", ""));
 
       querySnapshot.forEach((document) => {
         const student = document.data();
+        const option = new Option(`${student.name} (${student.adm || document.id})`, document.id);
+        studentSelect.add(option);
         html += `
           <tr class="border-b">
             <td class="p-3">${student.name}</td>
@@ -69,6 +73,72 @@
 
       document.getElementById('studentList').innerHTML = html || "<tr><td colspan=6 class='p-4 text-center'>No students</td></tr>";
     }
+
+    window.submitScheme = async () => {
+      const subject = document.getElementById('schemeSubject').value.trim();
+      const studentClass = document.getElementById('schemeClass').value.trim();
+      const term = document.getElementById('schemeTerm').value.trim();
+      const week = document.getElementById('schemeWeek').value.trim();
+      const topic = document.getElementById('schemeTopic').value.trim();
+      const objectives = document.getElementById('schemeObjectives').value.trim();
+
+      if (!subject || !studentClass || !term || !week || !topic || !objectives) {
+        alert("Complete all scheme of work fields before submitting.");
+        return;
+      }
+
+      try {
+        await addDoc(collection(db, "schemesOfWork"), {
+          subject,
+          class: studentClass,
+          term,
+          week,
+          topic,
+          objectives,
+          submittedBy: auth.currentUser.uid,
+          submittedByEmail: auth.currentUser.email,
+          submittedAt: new Date()
+        });
+        document.getElementById('schemeForm').reset();
+        alert("Scheme of work submitted.");
+      } catch (error) {
+        console.error("Scheme submission failed:", error);
+        alert(`Unable to submit the scheme of work: ${error.message}`);
+      }
+    };
+
+    window.submitResult = async () => {
+      const studentId = document.getElementById('resultStudent').value;
+      const subject = document.getElementById('resultSubject').value.trim();
+      const term = document.getElementById('resultTerm').value.trim();
+      const score = Number(document.getElementById('resultScore').value);
+      const maxScore = Number(document.getElementById('resultMaxScore').value);
+      const studentOption = document.getElementById('resultStudent').selectedOptions[0];
+
+      if (!studentId || !subject || !term || !Number.isFinite(score) ||
+          !Number.isFinite(maxScore) || score < 0 || maxScore <= 0 || score > maxScore) {
+        alert("Select a student, enter the subject and term, and enter a valid score.");
+        return;
+      }
+
+      try {
+        await addDoc(collection(db, "results"), {
+          studentId,
+          studentName: studentOption.textContent,
+          subject,
+          term,
+          score,
+          maxScore,
+          submittedBy: auth.currentUser.uid,
+          submittedAt: new Date()
+        });
+        document.getElementById('resultForm').reset();
+        alert("Student result saved.");
+      } catch (error) {
+        console.error("Student result submission failed:", error);
+        alert(`Unable to save the student result: ${error.message}`);
+      }
+    };
 
     window.saveStudent = async (id) => {
       await updateDoc(doc(db, "students", id), {
@@ -147,6 +217,31 @@
         <textarea id="nMsg" placeholder="Message" class="w-full border p-3 mt-3 rounded-xl h-28"></textarea>
         <button onclick="postNotice()" class="w-full bg-yellow-500 text-blue-900 font-bold py-3 mt-3 rounded-full">Post Notice</button>
       </div>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-4 mt-6">
+      <form id="schemeForm" onsubmit="event.preventDefault(); submitScheme();" class="bg-white rounded-2xl shadow p-5 space-y-3">
+        <h3 class="font-bold">Submit Scheme of Work</h3>
+        <input id="schemeSubject" required placeholder="Subject" class="w-full border p-3 rounded-xl">
+        <input id="schemeClass" required placeholder="Class" class="w-full border p-3 rounded-xl">
+        <input id="schemeTerm" required placeholder="Term (e.g. Term 1, 2026)" class="w-full border p-3 rounded-xl">
+        <input id="schemeWeek" required placeholder="Week" class="w-full border p-3 rounded-xl">
+        <input id="schemeTopic" required placeholder="Topic" class="w-full border p-3 rounded-xl">
+        <textarea id="schemeObjectives" required placeholder="Learning objectives" class="w-full border p-3 rounded-xl h-28"></textarea>
+        <button type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Submit Scheme</button>
+      </form>
+
+      <form id="resultForm" onsubmit="event.preventDefault(); submitResult();" class="bg-white rounded-2xl shadow p-5 space-y-3">
+        <h3 class="font-bold">Enter Student Result</h3>
+        <select id="resultStudent" required class="w-full border p-3 rounded-xl">
+          <option value="">Select a student</option>
+        </select>
+        <input id="resultSubject" required placeholder="Subject" class="w-full border p-3 rounded-xl">
+        <input id="resultTerm" required placeholder="Term (e.g. Term 1, 2026)" class="w-full border p-3 rounded-xl">
+        <input id="resultScore" required type="number" min="0" step="any" placeholder="Score" class="w-full border p-3 rounded-xl">
+        <input id="resultMaxScore" required type="number" min="0.01" step="any" placeholder="Maximum score" class="w-full border p-3 rounded-xl">
+        <button type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Result</button>
+      </form>
     </div>
   </div>
 </body>

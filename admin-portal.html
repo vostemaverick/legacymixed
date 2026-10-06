@@ -2,7 +2,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, sendPasswordResetEmail, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 const firebaseConfig = { apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4", authDomain: "legacy-secondary.firebaseapp.com", projectId: "legacy-secondary", storageBucket: "legacy-secondary.firebasestorage.app", messagingSenderId: "929548927280", appId: "1:929548927280:web:f565195bf94b04ae5ec8f5" };
 const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app);
@@ -10,6 +10,111 @@ const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db =
 // For creating users without logging out admin
 const secondaryApp = initializeApp(firebaseConfig, "secondary");
 const secondaryAuth = getAuth(secondaryApp);
+
+function formatDate(value) {
+  const date = value && typeof value.toDate === "function" ? value.toDate() : value instanceof Date ? value : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "Not recorded";
+}
+
+function renderTableBody(elementId, rows, emptyMessage) {
+  const body = document.getElementById(elementId);
+  body.replaceChildren();
+  if (!rows.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = body.closest("table").querySelectorAll("thead th").length;
+    cell.className = "p-3 text-center text-gray-500";
+    cell.textContent = emptyMessage;
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+
+  rows.forEach((values) => {
+    const row = document.createElement("tr");
+    row.className = "border-b";
+    values.forEach((value) => {
+      const cell = document.createElement("td");
+      cell.className = "p-3 align-top";
+      cell.textContent = value ?? "";
+      row.appendChild(cell);
+    });
+    body.appendChild(row);
+  });
+}
+
+window.loadStaffMonitor = async () => {
+  const status = document.getElementById("monitorStatus");
+  status.textContent = "Loading staff activity...";
+  try {
+    const [staffSnapshot, schemesSnapshot, resultsSnapshot, noticesSnapshot] = await Promise.all([
+      getDocs(collection(db, "staff")),
+      getDocs(collection(db, "schemesOfWork")),
+      getDocs(collection(db, "results")),
+      getDocs(collection(db, "notices"))
+    ]);
+
+    const staffById = new Map();
+    const staffByEmail = new Map();
+    const staffRows = staffSnapshot.docs.map((staffDoc) => {
+      const staff = staffDoc.data();
+      const record = {
+        name: staff.name || "Unnamed staff member",
+        email: staff.email || "",
+        role: staff.role || "Not specified",
+        createdAt: formatDate(staff.createdAt)
+      };
+      staffById.set(staffDoc.id, record);
+      if (record.email) staffByEmail.set(record.email.toLowerCase(), record);
+      return [record.name, record.email, record.role, record.createdAt];
+    });
+
+    const staffName = (uid, email) => {
+      const staff = (uid && staffById.get(uid)) || (email && staffByEmail.get(email.toLowerCase()));
+      return staff ? staff.name : email || "Unknown staff member";
+    };
+
+    const schemeRows = schemesSnapshot.docs.map((schemeDoc) => {
+      const scheme = schemeDoc.data();
+      return [
+        staffName(scheme.submittedBy, scheme.submittedByEmail),
+        scheme.subject,
+        `${scheme.class || ""} - ${scheme.term || ""}, Week ${scheme.week || ""}`,
+        scheme.topic,
+        formatDate(scheme.submittedAt)
+      ];
+    });
+    const resultRows = resultsSnapshot.docs.map((resultDoc) => {
+      const result = resultDoc.data();
+      return [
+        staffName(result.submittedBy, result.submittedByEmail),
+        result.studentName,
+        result.subject,
+        result.term,
+        `${result.score ?? ""} / ${result.maxScore ?? ""}`,
+        formatDate(result.submittedAt)
+      ];
+    });
+    const noticeRows = noticesSnapshot.docs.map((noticeDoc) => {
+      const notice = noticeDoc.data();
+      return [
+        staffName("", notice.by),
+        notice.title,
+        notice.message,
+        formatDate(notice.date)
+      ];
+    });
+
+    renderTableBody("monitorStaffRows", staffRows, "No staff accounts found.");
+    renderTableBody("monitorSchemeRows", schemeRows, "No schemes of work submitted yet.");
+    renderTableBody("monitorResultRows", resultRows, "No student results submitted yet.");
+    renderTableBody("monitorNoticeRows", noticeRows, "No notices posted yet.");
+    status.textContent = `Showing ${staffRows.length} staff members, ${schemeRows.length} schemes, ${resultRows.length} results, and ${noticeRows.length} notices.`;
+  } catch (error) {
+    console.error("Unable to load staff monitoring data:", error);
+    status.textContent = `Unable to load staff monitoring data: ${error.message}`;
+  }
+};
 
 window.loginAdmin = async () => {
   const e=document.getElementById('email').value; const p=document.getElementById('pass').value;
@@ -19,6 +124,7 @@ window.loginAdmin = async () => {
     if(!snap.exists() || !['principal','admin'].includes((snap.data().role||'').toLowerCase())){ alert("Wewe si Admin/Principal"); await signOut(auth); return; }
     document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
     document.getElementById('aName').innerText=snap.data().name;
+    await loadStaffMonitor();
   }catch(err){ alert(err.message) }
 }
 window.addStudent = async () => {
@@ -39,7 +145,7 @@ window.forgotPassword = async () => {
   const e=document.getElementById('email').value; if(!e) return alert("Weka email yako kwanza hapo juu");
   try{ await sendPasswordResetEmail(auth,e); alert("Reset link imetumwa kwa: "+e+" - Check inbox/spam"); }catch(err){ alert(err.message) }
 }
-window.showTab=(id)=>{ document.getElementById('tab-student').classList.add('hidden'); document.getElementById('tab-staff').classList.add('hidden'); document.getElementById('tab-settings').classList.add('hidden'); document.getElementById(id).classList.remove('hidden'); }
+window.showTab=(id)=>{ document.getElementById('tab-student').classList.add('hidden'); document.getElementById('tab-staff').classList.add('hidden'); document.getElementById('tab-settings').classList.add('hidden'); document.getElementById('tab-monitor').classList.add('hidden'); document.getElementById(id).classList.remove('hidden'); }
 window.logout=()=>signOut(auth).then(()=>location.reload());
 </script></head>
 <body class="bg-gray-100 min-h-screen">
@@ -54,11 +160,35 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
 
 <div id="dash" class="hidden max-w-5xl mx-auto p-4 mt-4">
 <h2 class="text-xl font-bold">Welcome <span id="aName"></span></h2>
-<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
+<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
 
 <div id="tab-student" class="bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" placeholder="Password" class="w-full border p-3 rounded-xl"><input id="sfee" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button onclick="addStudent()" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button></div>
 
 <div id="tab-staff" class="hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Staff</h2><input id="tname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="trole" placeholder="Role: principal, admin, teacher" class="w-full border p-3 rounded-xl"><input id="temail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="tpass" placeholder="Password" class="w-full border p-3 rounded-xl"><button onclick="addStaff()" class="w-full bg-blue-900 text-white py-3 rounded-full font-bold">Save Staff</button></div>
+
+<div id="tab-monitor" class="hidden mt-6 space-y-6">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <h2 class="font-bold text-xl">Staff Monitoring</h2>
+    <button onclick="loadStaffMonitor()" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh activity</button>
+  </div>
+  <p id="monitorStatus" class="text-sm text-gray-600" role="status">Staff activity loads after admin login.</p>
+  <section class="overflow-x-auto rounded-2xl bg-white p-5 shadow">
+    <h3 class="mb-3 font-bold">Staff Accounts</h3>
+    <table class="w-full text-left text-sm"><thead class="bg-gray-100"><tr><th class="p-3">Name</th><th class="p-3">Email</th><th class="p-3">Role</th><th class="p-3">Account Created</th></tr></thead><tbody id="monitorStaffRows"></tbody></table>
+  </section>
+  <section class="overflow-x-auto rounded-2xl bg-white p-5 shadow">
+    <h3 class="mb-3 font-bold">Schemes of Work</h3>
+    <table class="w-full text-left text-sm"><thead class="bg-gray-100"><tr><th class="p-3">Staff</th><th class="p-3">Subject</th><th class="p-3">Class / Term / Week</th><th class="p-3">Topic</th><th class="p-3">Submitted</th></tr></thead><tbody id="monitorSchemeRows"></tbody></table>
+  </section>
+  <section class="overflow-x-auto rounded-2xl bg-white p-5 shadow">
+    <h3 class="mb-3 font-bold">Student Results</h3>
+    <table class="w-full text-left text-sm"><thead class="bg-gray-100"><tr><th class="p-3">Staff</th><th class="p-3">Student</th><th class="p-3">Subject</th><th class="p-3">Term</th><th class="p-3">Score</th><th class="p-3">Submitted</th></tr></thead><tbody id="monitorResultRows"></tbody></table>
+  </section>
+  <section class="overflow-x-auto rounded-2xl bg-white p-5 shadow">
+    <h3 class="mb-3 font-bold">Notices</h3>
+    <table class="w-full text-left text-sm"><thead class="bg-gray-100"><tr><th class="p-3">Staff</th><th class="p-3">Title</th><th class="p-3">Message</th><th class="p-3">Submitted</th></tr></thead><tbody id="monitorNoticeRows"></tbody></table>
+  </section>
+</div>
 
 <div id="tab-settings" class="hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">⚙️ Change My Password</h2><p class="text-xs text-gray-500">Unaweza badilisha password yako mwenyewe hapa.</p><input id="newPass" type="password" placeholder="New Password (min 6 chars)" class="w-full border p-3 rounded-xl mt-2"><button onclick="changeMyPassword()" class="w-full bg-black text-white py-3 rounded-full font-bold">Update Password</button><hr class="my-4"><h3 class="font-bold text-sm">Umesahau?</h3><p class="text-xs text-gray-500">System itakutumia link kwa email yako ureset.</p><button onclick="forgotPassword()" class="w-full border border-blue-800 text-blue-800 py-3 mt-2 rounded-full font-bold">Send Reset Email</button></div>
 </div>
