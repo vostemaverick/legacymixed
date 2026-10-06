@@ -1,7 +1,7 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>Admin - Legacy</title><script src="https://cdn.tailwindcss.com"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, sendPasswordResetEmail, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, sendPasswordResetEmail, createUserWithEmailAndPassword, deleteUser } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
@@ -52,11 +52,16 @@ function renderMonitorSummary(stats) {
   cards.forEach((card) => {
     const item = document.createElement("div");
     item.className = "rounded-2xl bg-white p-4 shadow-sm ring-1 ring-gray-200";
-    item.innerHTML = `
-      <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">${card.label}</p>
-      <p class="mt-3 text-2xl font-bold text-gray-900">${card.value}</p>
-      <p class="mt-2 text-xs text-gray-600">${card.detail}</p>
-    `;
+    const label = document.createElement("p");
+    label.className = "text-xs font-semibold uppercase tracking-wide text-gray-500";
+    label.textContent = card.label;
+    const value = document.createElement("p");
+    value.className = "mt-3 text-2xl font-bold text-gray-900";
+    value.textContent = card.value;
+    const detail = document.createElement("p");
+    detail.className = "mt-2 text-xs text-gray-600";
+    detail.textContent = card.detail;
+    item.append(label, value, detail);
     container.appendChild(item);
   });
 }
@@ -650,24 +655,64 @@ window.loadStaffMonitor = async () => {
 
 window.loginAdmin = async () => {
   const e=document.getElementById('email').value.trim(); const p=document.getElementById('pass').value;
+  const button=document.getElementById("adminLoginButton");
+  if(!document.getElementById("adminLoginForm").reportValidity()) return;
+  button.disabled=true; button.textContent="Signing in...";
+  const status=document.getElementById("adminLoginStatus");
+  status.textContent="Checking administrator account...";
+  status.className="mt-3 text-sm text-gray-600";
   try{
     const cred=await signInWithEmailAndPassword(auth,e,p);
     const snap=await getDoc(doc(db,"staff",cred.user.uid));
-    if(!snap.exists() || !['principal','admin'].includes((snap.data().role||'').toLowerCase())){ alert("Wewe si Admin/Principal"); await signOut(auth); return; }
+    if(!snap.exists() || !['principal','admin'].includes((snap.data().role||'').trim().toLowerCase())){ await signOut(auth); status.textContent="Access denied. Sign in with an admin or principal account."; status.className="mt-3 text-sm text-red-700"; return; }
     document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
     document.getElementById('aName').textContent=snap.data().name || cred.user.email;
     await Promise.all([loadStaffMonitor(), loadMembers(), loadSchoolRecords()]);
-  }catch(err){ alert(err.message) }
+  }catch(err){ console.error("Admin portal sign-in failed:",err); status.textContent=`Unable to sign in: ${err.message}`; status.className="mt-3 text-sm text-red-700"; }
+  finally{ button.disabled=false; button.textContent="Login"; }
 }
 window.addStudent = async () => {
- const name=document.getElementById('sname').value; const adm=document.getElementById('sadm').value; const cls=document.getElementById('scls').value; const email=document.getElementById('semail').value; const pass=document.getElementById('spass').value; const fee=document.getElementById('sfee').value;
- if(!name||!email||!pass) return alert("Jaza name,email,pass");
- try{ const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); await setDoc(doc(db,"students",cred.user.uid),{name,adm,class:cls,feeBalance:fee,meanGrade:"B+",email,createdAt:new Date()}); await loadMembers(); alert("Student added: "+email); }catch(e){alert(e.message)}
+ const name=document.getElementById('sname').value.trim(); const adm=document.getElementById('sadm').value.trim(); const cls=document.getElementById('scls').value.trim(); const email=document.getElementById('semail').value.trim(); const pass=document.getElementById('spass').value; const fee=document.getElementById('sfee').value.trim();
+ const status=document.getElementById("studentAddStatus"); const button=document.getElementById("addStudentButton");
+ if(!name||!email||!pass){ status.textContent="Enter the student name, email, and password."; status.className="text-sm text-red-700"; return; }
+ if(fee && (!Number.isFinite(Number(fee)) || Number(fee)<0)){ status.textContent="Fee balance must be zero or a positive amount."; status.className="text-sm text-red-700"; return; }
+ button.disabled=true; button.textContent="Saving...";
+ let createdUser=null;
+ try{
+   const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); createdUser=cred.user;
+   await setDoc(doc(db,"students",cred.user.uid),{name,adm,class:cls,feeBalance:fee || "0",meanGrade:"B+",email,createdAt:new Date()});
+   document.getElementById("tab-student").reset();
+   status.textContent=`Student added: ${email}`; status.className="text-sm text-green-700";
+   await loadMembers();
+ }catch(e){
+   console.error("Unable to add student:",e);
+   if(createdUser){
+     try{ await deleteUser(createdUser); }
+     catch(cleanupError){ console.error("Unable to remove orphaned student authentication account:",cleanupError); }
+   }
+   status.textContent=`Unable to add student: ${e.message}`; status.className="text-sm text-red-700";
+ }finally{ button.disabled=false; button.textContent="Save Student"; }
 }
 window.addStaff = async () => {
- const name=document.getElementById('tname').value; const role=document.getElementById('trole').value; const email=document.getElementById('temail').value; const pass=document.getElementById('tpass').value;
- if(!name||!email||!pass) return alert("Jaza name,email,pass");
- try{ const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); await setDoc(doc(db,"staff",cred.user.uid),{name,email,role:role.toLowerCase(),createdAt:new Date()}); await Promise.all([loadMembers(), loadStaffMonitor()]); alert("Staff added: "+email); }catch(e){alert(e.message)}
+ const name=document.getElementById('tname').value.trim(); const role=document.getElementById('trole').value.trim().toLowerCase(); const email=document.getElementById('temail').value.trim(); const pass=document.getElementById('tpass').value;
+ const status=document.getElementById("staffAddStatus"); const button=document.getElementById("addStaffButton");
+ if(!name||!role||!email||!pass){ status.textContent="Enter the staff name, role, email, and password."; status.className="text-sm text-red-700"; return; }
+ button.disabled=true; button.textContent="Saving...";
+ let createdUser=null;
+ try{
+   const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); createdUser=cred.user;
+   await setDoc(doc(db,"staff",cred.user.uid),{name,email,role,createdAt:new Date()});
+   document.getElementById("tab-staff").reset();
+   status.textContent=`Staff member added: ${email}`; status.className="text-sm text-green-700";
+   await Promise.all([loadMembers(), loadStaffMonitor()]);
+ }catch(e){
+   console.error("Unable to add staff member:",e);
+   if(createdUser){
+     try{ await deleteUser(createdUser); }
+     catch(cleanupError){ console.error("Unable to remove orphaned staff authentication account:",cleanupError); }
+   }
+   status.textContent=`Unable to add staff member: ${e.message}`; status.className="text-sm text-red-700";
+ }finally{ button.disabled=false; button.textContent="Save Staff"; }
 }
 window.changeMyPassword = async () => {
   const newPass=document.getElementById('newPass').value; if(newPass.length<6) return alert("Password lazima 6+ characters");
@@ -685,8 +730,11 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
 
 <div id="loginBox" class="max-w-sm mx-auto mt-20 bg-white p-8 rounded-2xl shadow">
 <h2 class="font-bold text-xl">Admin Login</h2><p class="text-xs text-gray-500 mt-1">Principal / Admin only</p>
-<input id="email" type="email" placeholder="Email" class="w-full border p-3 mt-5 rounded-xl"><input id="pass" type="password" placeholder="Password" class="w-full border p-3 mt-3 rounded-xl">
-<button onclick="loginAdmin()" class="w-full bg-red-700 text-white py-3 mt-5 rounded-full font-bold">Login</button>
+<form id="adminLoginForm" onsubmit="event.preventDefault(); loginAdmin();">
+<input id="email" type="email" required placeholder="Email" class="w-full border p-3 mt-5 rounded-xl"><input id="pass" type="password" required placeholder="Password" class="w-full border p-3 mt-3 rounded-xl">
+<button id="adminLoginButton" type="submit" class="w-full bg-red-700 text-white py-3 mt-5 rounded-full font-bold">Login</button>
+</form>
+<p id="adminLoginStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p>
 <button onclick="forgotPassword()" class="w-full text-xs mt-3 text-blue-700 underline">Forgot password? Send reset link</button>
 </div>
 
@@ -694,9 +742,9 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
 <h2 class="text-xl font-bold">Welcome <span id="aName"></span></h2>
 <div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-school-records')" class="bg-green-700 text-white px-5 py-2 rounded-full text-sm">School Records</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
 
-<div id="tab-student" class="admin-tab-content bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" placeholder="Password" class="w-full border p-3 rounded-xl"><input id="sfee" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button onclick="addStudent()" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button></div>
+<form id="tab-student" onsubmit="event.preventDefault(); addStudent();" class="admin-tab-content bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" required placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" required type="email" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" required minlength="6" type="password" placeholder="Password (min 6 characters)" class="w-full border p-3 rounded-xl"><input id="sfee" type="number" min="0" step="0.01" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button id="addStudentButton" type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button><p id="studentAddStatus" class="text-sm" role="status" aria-live="polite"></p></form>
 
-<div id="tab-staff" class="admin-tab-content hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Staff</h2><input id="tname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="trole" placeholder="Role: principal, admin, teacher" class="w-full border p-3 rounded-xl"><input id="temail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="tpass" placeholder="Password" class="w-full border p-3 rounded-xl"><button onclick="addStaff()" class="w-full bg-blue-900 text-white py-3 rounded-full font-bold">Save Staff</button></div>
+<form id="tab-staff" onsubmit="event.preventDefault(); addStaff();" class="admin-tab-content hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Staff</h2><input id="tname" required placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="trole" required placeholder="Role: principal, admin, teacher" class="w-full border p-3 rounded-xl"><input id="temail" required type="email" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="tpass" required minlength="6" type="password" placeholder="Password (min 6 characters)" class="w-full border p-3 rounded-xl"><button id="addStaffButton" type="submit" class="w-full bg-blue-900 text-white py-3 rounded-full font-bold">Save Staff</button><p id="staffAddStatus" class="text-sm" role="status" aria-live="polite"></p></form>
 
 <div id="tab-school-records" class="admin-tab-content hidden mt-6 space-y-5">
   <section class="rounded-2xl bg-white p-6 shadow">

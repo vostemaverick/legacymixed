@@ -111,9 +111,43 @@ const app = initializeApp(firebaseConfig); const db = getFirestore(app);
 try{
   const q = query(collection(db,"notices"));
   const snap = await getDocs(q);
-  let html=""; snap.forEach(d=>{ const n=d.data(); html+=`<div class="notice-item"><strong>${n.title}</strong><p style="margin:6px 0 0;color:var(--muted);font-size:0.9rem">${n.message}</p><small style="color:var(--muted)">${n.by||''}</small></div>`; });
-  document.getElementById('noticesList').innerHTML = html || "<p style='color:var(--muted)'>No notices yet. Staff can post from Staff Portal.</p>";
-}catch(e){ document.getElementById('noticesList').innerHTML="<p style='color:var(--muted)'>Notices will appear here once staff posts.</p>"; }
+  const list = document.getElementById("noticesList");
+  list.replaceChildren();
+  snap.docs
+    .sort((a, b) => {
+      const dateOf = (notice) => notice.date && typeof notice.date.toDate === "function" ? notice.date.toDate().getTime() : 0;
+      return dateOf(b.data()) - dateOf(a.data());
+    })
+    .forEach((noticeDoc) => {
+      const notice = noticeDoc.data();
+      const item = document.createElement("article");
+      item.className = "notice-item";
+      const title = document.createElement("strong");
+      title.textContent = notice.title || "School notice";
+      const message = document.createElement("p");
+      message.style.cssText = "margin:6px 0 0;color:var(--muted);font-size:0.9rem";
+      message.textContent = notice.message || "";
+      const author = document.createElement("small");
+      author.style.color = "var(--muted)";
+      author.textContent = notice.by || "";
+      item.append(title, message, author);
+      list.appendChild(item);
+    });
+  if (!snap.size) {
+    const empty = document.createElement("p");
+    empty.style.color = "var(--muted)";
+    empty.textContent = "No notices yet. Staff can post from Staff Portal.";
+    list.appendChild(empty);
+  }
+}catch(e){
+  console.error("Unable to load school notices:", e);
+  const list = document.getElementById("noticesList");
+  list.replaceChildren();
+  const message = document.createElement("p");
+  message.style.color = "var(--muted)";
+  message.textContent = "Notices could not be loaded right now. Please check back later.";
+  list.appendChild(message);
+}
 document.getElementById('year').textContent=new Date().getFullYear();
 </script>
 </body>
