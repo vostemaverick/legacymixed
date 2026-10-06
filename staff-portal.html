@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Staff Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+    import { getFirestore, collection, getDocs, doc, getDoc, updateDoc, addDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4",
+      authDomain: "legacy-secondary.firebaseapp.com",
+      projectId: "legacy-secondary",
+      storageBucket: "legacy-secondary.firebasestorage.app",
+      messagingSenderId: "929548927280",
+      appId: "1:929548927280:web:f565195bf94b04ae5ec8f5"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    window.loginStaff = async () => {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('pass').value;
+
+      try {
+        const credential = await signInWithEmailAndPassword(auth, email, password);
+        const snapshot = await getDoc(doc(db, "staff", credential.user.uid));
+
+        if (!snapshot.exists()) {
+          alert("Not staff");
+          return;
+        }
+
+        document.getElementById('loginBox').classList.add('hidden');
+        document.getElementById('dash').classList.remove('hidden');
+        document.getElementById('tName').innerText = snapshot.data().name;
+
+        if ((snapshot.data().role || '').toLowerCase() === 'principal' || (snapshot.data().role || '').toLowerCase() === 'admin') {
+          document.getElementById('adminLink').classList.remove('hidden');
+        }
+
+        loadStudents();
+      } catch (error) {
+        alert(error.message);
+      }
+    };
+
+    async function loadStudents() {
+      const querySnapshot = await getDocs(collection(db, "students"));
+      let html = "";
+
+      querySnapshot.forEach((document) => {
+        const student = document.data();
+        html += `
+          <tr class="border-b">
+            <td class="p-3">${student.name}</td>
+            <td class="p-3">${student.adm}</td>
+            <td class="p-3">${student.class}</td>
+            <td class="p-3"><input id="grade-${document.id}" value="${student.meanGrade || ''}" class="border p-1 w-20 rounded"></td>
+            <td class="p-3"><input id="fee-${document.id}" value="${student.feeBalance || 0}" class="border p-1 w-24 rounded"></td>
+            <td class="p-3"><button onclick="saveStudent('${document.id}')" class="bg-blue-800 text-white px-3 py-1 rounded text-xs">Save</button></td>
+          </tr>`;
+      });
+
+      document.getElementById('studentList').innerHTML = html || "<tr><td colspan=6 class='p-4 text-center'>No students</td></tr>";
+    }
+
+    window.saveStudent = async (id) => {
+      await updateDoc(doc(db, "students", id), {
+        meanGrade: document.getElementById(`grade-${id}`).value,
+        feeBalance: document.getElementById(`fee-${id}`).value
+      });
+      alert("Updated!");
+    };
+
+    window.postNotice = async () => {
+      const title = document.getElementById('nTitle').value;
+      const message = document.getElementById('nMsg').value;
+
+      if (!title || !message) {
+        return alert("Jaza");
+      }
+
+      await addDoc(collection(db, "notices"), {
+        title,
+        message,
+        date: new Date(),
+        by: auth.currentUser.email
+      });
+
+      alert("Posted!");
+    };
+
+    window.logout = () => signOut(auth).then(() => location.reload());
+  </script>
+</head>
+<body class="bg-gray-50">
+  <nav class="bg-blue-900 text-white p-4 flex justify-between">
+    <a href="index.html" class="font-bold">LEGACY STAFF</a>
+    <button onclick="logout()" class="text-xs border px-3 py-1 rounded-full">Logout</button>
+  </nav>
+
+  <div id="loginBox" class="max-w-sm mx-auto mt-20 bg-white p-8 rounded-2xl shadow">
+    <h2 class="font-bold text-xl">Staff Login</h2>
+    <input id="email" type="email" placeholder="Email" class="w-full border p-3 mt-5 rounded-xl">
+    <input id="pass" type="password" placeholder="Password" class="w-full border p-3 mt-3 rounded-xl">
+    <button onclick="loginStaff()" class="w-full bg-blue-900 text-white py-3 mt-5 rounded-full font-bold">Login</button>
+  </div>
+
+  <div id="dash" class="hidden max-w-6xl mx-auto mt-6 p-4">
+    <div class="flex justify-between items-center flex-wrap gap-2">
+      <div>
+        <h2 class="text-2xl font-bold">Mwalimu <span id="tName"></span></h2>
+        <a id="adminLink" href="admin.html" class="hidden mt-2 inline-block bg-red-600 text-white px-4 py-2 rounded-full text-xs font-bold">🔐 ADMIN PANEL - Add Students/Staff</a>
+      </div>
+      <a href="index.html" class="text-sm">Home</a>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-4 mt-6">
+      <div class="md:col-span-2 bg-white rounded-2xl shadow p-5">
+        <h3 class="font-bold">Wanafunzi</h3>
+        <div class="overflow-auto mt-4">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-100">
+              <tr>
+                <th class="p-3 text-left">Name</th>
+                <th>ADM</th>
+                <th>Class</th>
+                <th>Grade</th>
+                <th>Fee</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="studentList"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-5">
+        <h3 class="font-bold">Post Notice</h3>
+        <input id="nTitle" placeholder="Title" class="w-full border p-3 mt-4 rounded-xl">
+        <textarea id="nMsg" placeholder="Message" class="w-full border p-3 mt-3 rounded-xl h-28"></textarea>
+        <button onclick="postNotice()" class="w-full bg-yellow-500 text-blue-900 font-bold py-3 mt-3 rounded-full">Post Notice</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
