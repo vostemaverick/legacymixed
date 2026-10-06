@@ -1,0 +1,24 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAdmin() {
+      return request.auth != null &&
+        firestore.get(/databases/(default)/documents/staff/$(request.auth.uid)).data.role in ['admin', 'principal'];
+    }
+
+    match /school-records/{adminUid}/{recordId}/{fileName} {
+      allow read, delete: if isAdmin();
+      allow create: if isAdmin() &&
+        request.auth.uid == adminUid &&
+        request.resource.size <= 10 * 1024 * 1024 &&
+        request.resource.contentType.matches(
+          'application/pdf|application/msword|application/vnd.openxmlformats-officedocument.wordprocessingml.document|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet|text/csv|image/jpeg|image/png|image/webp'
+        );
+      allow update: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

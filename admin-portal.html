@@ -2,11 +2,13 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, sendPasswordResetEmail, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
+import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
 const firebaseConfig = { apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4", authDomain: "legacy-secondary.firebaseapp.com", projectId: "legacy-secondary", storageBucket: "legacy-secondary.firebasestorage.app", messagingSenderId: "929548927280", appId: "1:929548927280:web:f565195bf94b04ae5ec8f5" };
 const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app);
+const storage = getStorage(app);
 const removeMemberCallable = httpsCallable(getFunctions(app), "removeMember");
 
 // For creating users without logging out admin
@@ -16,6 +18,47 @@ const secondaryAuth = getAuth(secondaryApp);
 function formatDate(value) {
   const date = value && typeof value.toDate === "function" ? value.toDate() : value instanceof Date ? value : null;
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "Not recorded";
+}
+
+function formatRelativeDate(value) {
+  const date = value && typeof value.toDate === "function" ? value.toDate() : value instanceof Date ? value : null;
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return "No activity";
+  }
+
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.max(0, Math.round(diffMs / 60000));
+  if (diffMinutes < 1) return "Just now";
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+}
+
+function renderMonitorSummary(stats) {
+  const container = document.getElementById("monitorSummary");
+  if (!container) return;
+
+  const cards = [
+    { label: "Staff accounts", value: stats.staff, detail: `${stats.roles.length} roles tracked` },
+    { label: "Schemes", value: stats.schemes, detail: stats.latestScheme || "No scheme uploads yet" },
+    { label: "Results", value: stats.results, detail: stats.latestResult || "No results added yet" },
+    { label: "Notices", value: stats.notices, detail: stats.latestNotice || "No notices posted yet" },
+    { label: "Latest activity", value: stats.latestActivity || "None", detail: "Most recent submission" }
+  ];
+
+  container.replaceChildren();
+  cards.forEach((card) => {
+    const item = document.createElement("div");
+    item.className = "rounded-2xl bg-white p-4 shadow-sm ring-1 ring-gray-200";
+    item.innerHTML = `
+      <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">${card.label}</p>
+      <p class="mt-3 text-2xl font-bold text-gray-900">${card.value}</p>
+      <p class="mt-2 text-xs text-gray-600">${card.detail}</p>
+    `;
+    container.appendChild(item);
+  });
 }
 
 function renderTableBody(elementId, rows, emptyMessage) {
@@ -44,6 +87,328 @@ function renderTableBody(elementId, rows, emptyMessage) {
     body.appendChild(row);
   });
 }
+
+let schoolRecords = [];
+const schoolRecordContentTypes = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  csv: "text/csv",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp"
+};
+
+function getSchoolRecordContentType(file) {
+  return schoolRecordContentTypes[file.name.split(".").pop().toLowerCase()];
+}
+
+async function requireAdmin() {
+  if (!auth.currentUser) {
+    throw new Error("Sign in as an administrator before managing school records.");
+  }
+
+  const profile = await getDoc(doc(db, "staff", auth.currentUser.uid));
+  const role = profile.exists() ? String(profile.data().role || "").trim().toLowerCase() : "";
+  if (!["admin", "principal"].includes(role)) {
+    throw new Error("Only an admin or principal can manage school records.");
+  }
+}
+
+function setRecordStatus(message, state = "info") {
+  const status = document.getElementById("schoolRecordStatus");
+  status.textContent = message;
+  status.className = `mt-3 text-sm ${state === "error" ? "text-red-700" : state === "success" ? "text-green-700" : "text-gray-600"}`;
+}
+
+function renderSchoolRecords(records = schoolRecords) {
+  const search = document.getElementById("schoolRecordSearch").value.trim().toLowerCase();
+  const filteredRecords = records.filter((record) => {
+    const searchable = [
+      record.title,
+      record.category,
+      record.description,
+      ...(record.fields || []).flatMap((field) => [field.name, field.value]),
+      ...(record.attachments || []).map((file) => file.name)
+    ].join(" ").toLowerCase();
+    return searchable.includes(search);
+  });
+  const list = document.getElementById("schoolRecordList");
+  list.replaceChildren();
+
+  if (!filteredRecords.length) {
+    const empty = document.createElement("p");
+    empty.className = "rounded-xl border border-dashed p-6 text-center text-sm text-gray-500";
+    empty.textContent = schoolRecords.length ? "No records match your search." : "No school records have been saved yet.";
+    list.appendChild(empty);
+  }
+
+  filteredRecords.forEach((record) => {
+    const card = document.createElement("article");
+    card.className = "rounded-2xl border bg-white p-5 shadow-sm";
+    const header = document.createElement("div");
+    header.className = "flex flex-wrap items-start justify-between gap-3";
+    const headingGroup = document.createElement("div");
+    const title = document.createElement("h3");
+    title.className = "text-lg font-bold";
+    title.textContent = record.title || "Untitled record";
+    const metadata = document.createElement("p");
+    metadata.className = "mt-1 text-xs text-gray-500";
+    metadata.textContent = `${record.category || "Uncategorized"} · ${formatDate(record.createdAt)}`;
+    headingGroup.append(title, metadata);
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-700 hover:bg-red-50";
+    removeButton.textContent = "Delete";
+    removeButton.addEventListener("click", () => window.deleteSchoolRecord(record));
+    header.append(headingGroup, removeButton);
+    card.appendChild(header);
+
+    if (record.description) {
+      const description = document.createElement("p");
+      description.className = "mt-3 whitespace-pre-wrap text-sm text-gray-700";
+      description.textContent = record.description;
+      card.appendChild(description);
+    }
+
+    if (record.fields && record.fields.length) {
+      const fieldsList = document.createElement("dl");
+      fieldsList.className = "mt-3 grid gap-2 sm:grid-cols-2";
+      record.fields.forEach((field) => {
+        const item = document.createElement("div");
+        item.className = "rounded-lg bg-gray-50 p-3";
+        const label = document.createElement("dt");
+        label.className = "text-xs font-semibold text-gray-500";
+        label.textContent = field.name;
+        const value = document.createElement("dd");
+        value.className = "mt-1 whitespace-pre-wrap text-sm text-gray-900";
+        value.textContent = field.value;
+        item.append(label, value);
+        fieldsList.appendChild(item);
+      });
+      card.appendChild(fieldsList);
+    }
+
+    if (record.attachments && record.attachments.length) {
+      const attachments = document.createElement("ul");
+      attachments.className = "mt-3 space-y-1";
+      record.attachments.forEach((file) => {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.className = "text-sm font-medium text-blue-800 underline";
+        link.href = file.downloadUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = `${file.name} (${(file.size / 1048576).toFixed(1)} MB)`;
+        item.appendChild(link);
+        attachments.appendChild(item);
+      });
+      card.appendChild(attachments);
+    }
+
+    list.appendChild(card);
+  });
+
+  document.getElementById("schoolRecordCount").textContent =
+    `Showing ${filteredRecords.length} of ${schoolRecords.length} records.`;
+}
+
+window.filterSchoolRecords = () => renderSchoolRecords();
+
+window.addRecordField = () => {
+  const container = document.getElementById("schoolRecordFields");
+  if (container.children.length >= 20) {
+    setRecordStatus("A record can have at most 20 custom fields.", "error");
+    return;
+  }
+
+  const row = document.createElement("div");
+  row.className = "flex flex-wrap gap-2";
+  const name = document.createElement("input");
+  name.type = "text";
+  name.maxLength = 60;
+  name.required = true;
+  name.placeholder = "Field name (e.g. Reference No.)";
+  name.setAttribute("aria-label", "Custom field name");
+  name.className = "min-w-36 flex-1 rounded-xl border p-3";
+  const value = document.createElement("input");
+  value.type = "text";
+  value.maxLength = 1000;
+  value.required = true;
+  value.placeholder = "Value";
+  value.setAttribute("aria-label", "Custom field value");
+  value.className = "min-w-36 flex-1 rounded-xl border p-3";
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "rounded-xl border px-3 text-sm text-red-700";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => row.remove());
+  row.append(name, value, remove);
+  container.appendChild(row);
+};
+
+async function uploadSchoolRecordFile(file, storagePath) {
+  const fileRef = ref(storage, storagePath);
+  const task = uploadBytesResumable(fileRef, file, { contentType: getSchoolRecordContentType(file) });
+  await new Promise((resolve, reject) => {
+    task.on("state_changed", (snapshot) => {
+      const percent = Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100);
+      setRecordStatus(`Uploading ${file.name}: ${percent}%`);
+    }, reject, resolve);
+  });
+  return getDownloadURL(task.snapshot.ref);
+}
+
+window.loadSchoolRecords = async () => {
+  setRecordStatus("Loading saved school records...");
+  try {
+    await requireAdmin();
+    const snapshot = await getDocs(collection(db, "schoolRecords"));
+    schoolRecords = snapshot.docs
+      .map((recordDoc) => ({ id: recordDoc.id, ...recordDoc.data() }))
+      .sort((a, b) => {
+        const aDate = a.createdAt && typeof a.createdAt.toDate === "function" ? a.createdAt.toDate().getTime() : 0;
+        const bDate = b.createdAt && typeof b.createdAt.toDate === "function" ? b.createdAt.toDate().getTime() : 0;
+        return bDate - aDate;
+      });
+    renderSchoolRecords();
+    setRecordStatus(`Loaded ${schoolRecords.length} saved school records.`, "success");
+    return true;
+  } catch (error) {
+    console.error("Unable to load school records:", error);
+    setRecordStatus(`Unable to load school records: ${error.message}`, "error");
+    return false;
+  }
+};
+
+window.saveSchoolRecord = async () => {
+  const form = document.getElementById("schoolRecordForm");
+  if (!form.reportValidity()) return;
+
+  const title = document.getElementById("schoolRecordTitle").value.trim();
+  const category = document.getElementById("schoolRecordCategory").value.trim();
+  const description = document.getElementById("schoolRecordDescription").value.trim();
+  const files = Array.from(document.getElementById("schoolRecordFiles").files);
+  const allowedExtensions = new Set(Object.keys(schoolRecordContentTypes));
+  const maxFileSize = 10 * 1024 * 1024;
+
+  if (!title || !category) {
+    setRecordStatus("Enter a title and category for this record.", "error");
+    return;
+  }
+  if (files.length > 5 || files.some((file) => file.size > maxFileSize ||
+      !allowedExtensions.has(file.name.split(".").pop().toLowerCase()))) {
+    setRecordStatus("Attach up to 5 PDF, Office, CSV, or image files. Each file must be 10 MB or smaller.", "error");
+    return;
+  }
+
+  const fieldRows = Array.from(document.getElementById("schoolRecordFields").children);
+  const fields = fieldRows.map((row) => ({
+    name: row.querySelector('input[aria-label="Custom field name"]').value.trim(),
+    value: row.querySelector('input[aria-label="Custom field value"]').value.trim()
+  }));
+  const fieldNames = fields.map((field) => field.name.toLowerCase());
+  if (fieldNames.some((name) => !name) || new Set(fieldNames).size !== fieldNames.length) {
+    setRecordStatus("Custom field names must be filled in and unique.", "error");
+    return;
+  }
+
+  const button = document.getElementById("saveSchoolRecordButton");
+  button.disabled = true;
+  button.textContent = "Saving...";
+  const uploadedFiles = [];
+  try {
+    await requireAdmin();
+    const recordRef = doc(collection(db, "schoolRecords"));
+    for (const [index, file] of files.entries()) {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storagePath = `school-records/${auth.currentUser.uid}/${recordRef.id}/${Date.now()}-${index}-${safeName}`;
+      const downloadUrl = await uploadSchoolRecordFile(file, storagePath);
+      uploadedFiles.push({
+        name: file.name,
+        size: file.size,
+        contentType: getSchoolRecordContentType(file),
+        storagePath,
+        downloadUrl
+      });
+    }
+
+    await setDoc(recordRef, {
+      title,
+      category,
+      description,
+      fields,
+      attachments: uploadedFiles,
+      createdAt: new Date(),
+      createdBy: auth.currentUser.uid,
+      createdByEmail: auth.currentUser.email || ""
+    });
+    form.reset();
+    document.getElementById("schoolRecordFields").replaceChildren();
+    document.getElementById("schoolRecordFileNames").textContent = "No files selected.";
+    if (await window.loadSchoolRecords()) {
+      setRecordStatus("School record saved successfully.", "success");
+    } else {
+      setRecordStatus("School record was saved, but the saved records list could not be refreshed.", "error");
+    }
+  } catch (error) {
+    console.error("Unable to save school record:", error);
+    const cleanupErrors = [];
+    for (const file of uploadedFiles) {
+      try {
+        await deleteObject(ref(storage, file.storagePath));
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError.message);
+        console.error("Unable to clean up an incomplete school record upload:", cleanupError);
+      }
+    }
+    const cleanupMessage = cleanupErrors.length ? ` Uploaded file cleanup also failed: ${cleanupErrors.join("; ")}` : "";
+    setRecordStatus(`Unable to save school record: ${error.message}${cleanupMessage}`, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save school record";
+  }
+};
+
+window.deleteSchoolRecord = async (record) => {
+  if (!window.confirm(`Delete the school record "${record.title || "Untitled record"}" and its attachments? This cannot be undone.`)) {
+    return;
+  }
+
+  try {
+    await requireAdmin();
+    await deleteDoc(doc(db, "schoolRecords", record.id));
+    schoolRecords = schoolRecords.filter((item) => item.id !== record.id);
+    renderSchoolRecords();
+    const cleanupErrors = [];
+    for (const file of record.attachments || []) {
+      try {
+        await deleteObject(ref(storage, file.storagePath));
+      } catch (error) {
+        cleanupErrors.push(`${file.name}: ${error.message}`);
+        console.error("Unable to delete school record attachment:", error);
+      }
+    }
+    if (cleanupErrors.length) {
+      setRecordStatus(`Record deleted, but some attachment files could not be removed: ${cleanupErrors.join("; ")}`, "error");
+    } else {
+      setRecordStatus("School record and attachments deleted.", "success");
+    }
+  } catch (error) {
+    console.error("Unable to delete school record:", error);
+    setRecordStatus(`Unable to delete school record: ${error.message}`, "error");
+  }
+};
+
+window.updateSchoolRecordFileNames = () => {
+  const files = Array.from(document.getElementById("schoolRecordFiles").files);
+  document.getElementById("schoolRecordFileNames").textContent =
+    files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected: ${files.map((file) => file.name).join(", ")}` : "No files selected.";
+};
 
 let memberDirectory = [];
 
@@ -199,8 +564,17 @@ window.loadStaffMonitor = async () => {
       return staff ? staff.name : email || "Unknown staff member";
     };
 
+    const roleSummary = {};
+    staffSnapshot.docs.forEach((staffDoc) => {
+      const role = String(staffDoc.data().role || "Not specified").trim();
+      roleSummary[role || "Not specified"] = (roleSummary[role || "Not specified"] || 0) + 1;
+    });
+
+    const latestActivityDates = [];
     const schemeRows = schemesSnapshot.docs.map((schemeDoc) => {
       const scheme = schemeDoc.data();
+      const submittedAt = scheme.submittedAt && typeof scheme.submittedAt.toDate === "function" ? scheme.submittedAt.toDate() : null;
+      if (submittedAt) latestActivityDates.push(submittedAt);
       return [
         staffName(scheme.submittedBy, scheme.submittedByEmail),
         scheme.subject,
@@ -211,6 +585,8 @@ window.loadStaffMonitor = async () => {
     });
     const resultRows = resultsSnapshot.docs.map((resultDoc) => {
       const result = resultDoc.data();
+      const submittedAt = result.submittedAt && typeof result.submittedAt.toDate === "function" ? result.submittedAt.toDate() : null;
+      if (submittedAt) latestActivityDates.push(submittedAt);
       return [
         staffName(result.submittedBy, result.submittedByEmail),
         result.studentName,
@@ -222,12 +598,32 @@ window.loadStaffMonitor = async () => {
     });
     const noticeRows = noticesSnapshot.docs.map((noticeDoc) => {
       const notice = noticeDoc.data();
+      const noticeDate = notice.date && typeof notice.date.toDate === "function" ? notice.date.toDate() : null;
+      if (noticeDate) latestActivityDates.push(noticeDate);
       return [
         staffName("", notice.by),
         notice.title,
         notice.message,
         formatDate(notice.date)
       ];
+    });
+
+    const latestActivityDate = latestActivityDates.length ? new Date(Math.max(...latestActivityDates.map((date) => date.getTime()))) : null;
+    const latestActivity = latestActivityDate ? formatRelativeDate(latestActivityDate) : "No activity";
+    const latestScheme = schemeRows.length ? `Latest: ${schemeRows[schemeRows.length - 1][0]}` : null;
+    const latestResult = resultRows.length ? `Latest: ${resultRows[resultRows.length - 1][0]}` : null;
+    const latestNotice = noticeRows.length ? `Latest: ${noticeRows[noticeRows.length - 1][0]}` : null;
+
+    renderMonitorSummary({
+      staff: staffRows.length,
+      roles: Object.keys(roleSummary),
+      schemes: schemeRows.length,
+      latestScheme,
+      results: resultRows.length,
+      latestResult,
+      notices: noticeRows.length,
+      latestNotice,
+      latestActivity
     });
 
     renderTableBody("monitorStaffRows", staffRows, "No staff accounts found.");
@@ -237,19 +633,30 @@ window.loadStaffMonitor = async () => {
     status.textContent = `Showing ${staffRows.length} staff members, ${schemeRows.length} schemes, ${resultRows.length} results, and ${noticeRows.length} notices.`;
   } catch (error) {
     console.error("Unable to load staff monitoring data:", error);
+    renderMonitorSummary({
+      staff: 0,
+      roles: [],
+      schemes: 0,
+      results: 0,
+      notices: 0,
+      latestActivity: "Unable to load",
+      latestScheme: null,
+      latestResult: null,
+      latestNotice: null
+    });
     status.textContent = `Unable to load staff monitoring data: ${error.message}`;
   }
 };
 
 window.loginAdmin = async () => {
-  const e=document.getElementById('email').value; const p=document.getElementById('pass').value;
+  const e=document.getElementById('email').value.trim(); const p=document.getElementById('pass').value;
   try{
     const cred=await signInWithEmailAndPassword(auth,e,p);
     const snap=await getDoc(doc(db,"staff",cred.user.uid));
     if(!snap.exists() || !['principal','admin'].includes((snap.data().role||'').toLowerCase())){ alert("Wewe si Admin/Principal"); await signOut(auth); return; }
     document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
-    document.getElementById('aName').innerText=snap.data().name;
-    await Promise.all([loadStaffMonitor(), loadMembers()]);
+    document.getElementById('aName').textContent=snap.data().name || cred.user.email;
+    await Promise.all([loadStaffMonitor(), loadMembers(), loadSchoolRecords()]);
   }catch(err){ alert(err.message) }
 }
 window.addStudent = async () => {
@@ -270,7 +677,7 @@ window.forgotPassword = async () => {
   const e=document.getElementById('email').value; if(!e) return alert("Weka email yako kwanza hapo juu");
   try{ await sendPasswordResetEmail(auth,e); alert("Reset link imetumwa kwa: "+e+" - Check inbox/spam"); }catch(err){ alert(err.message) }
 }
-window.showTab=(id)=>{ document.getElementById('tab-student').classList.add('hidden'); document.getElementById('tab-staff').classList.add('hidden'); document.getElementById('tab-settings').classList.add('hidden'); document.getElementById('tab-monitor').classList.add('hidden'); document.getElementById('tab-members').classList.add('hidden'); document.getElementById(id).classList.remove('hidden'); }
+window.showTab=(id)=>{ document.querySelectorAll('.admin-tab-content').forEach((tab)=>tab.classList.add('hidden')); document.getElementById(id).classList.remove('hidden'); }
 window.logout=()=>signOut(auth).then(()=>location.reload());
 </script></head>
 <body class="bg-gray-100 min-h-screen">
@@ -285,13 +692,62 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
 
 <div id="dash" class="hidden max-w-5xl mx-auto p-4 mt-4">
 <h2 class="text-xl font-bold">Welcome <span id="aName"></span></h2>
-<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
+<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-school-records')" class="bg-green-700 text-white px-5 py-2 rounded-full text-sm">School Records</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
 
-<div id="tab-student" class="bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" placeholder="Password" class="w-full border p-3 rounded-xl"><input id="sfee" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button onclick="addStudent()" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button></div>
+<div id="tab-student" class="admin-tab-content bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" placeholder="Password" class="w-full border p-3 rounded-xl"><input id="sfee" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button onclick="addStudent()" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button></div>
 
-<div id="tab-staff" class="hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Staff</h2><input id="tname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="trole" placeholder="Role: principal, admin, teacher" class="w-full border p-3 rounded-xl"><input id="temail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="tpass" placeholder="Password" class="w-full border p-3 rounded-xl"><button onclick="addStaff()" class="w-full bg-blue-900 text-white py-3 rounded-full font-bold">Save Staff</button></div>
+<div id="tab-staff" class="admin-tab-content hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Staff</h2><input id="tname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="trole" placeholder="Role: principal, admin, teacher" class="w-full border p-3 rounded-xl"><input id="temail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="tpass" placeholder="Password" class="w-full border p-3 rounded-xl"><button onclick="addStaff()" class="w-full bg-blue-900 text-white py-3 rounded-full font-bold">Save Staff</button></div>
 
-<div id="tab-members" class="hidden mt-6 overflow-x-auto rounded-2xl bg-white p-5 shadow">
+<div id="tab-school-records" class="admin-tab-content hidden mt-6 space-y-5">
+  <section class="rounded-2xl bg-white p-6 shadow">
+    <div>
+      <h2 class="text-xl font-bold">Store School Records</h2>
+      <p class="mt-1 text-sm text-gray-600">Save general school information with flexible fields and optional attachments.</p>
+    </div>
+    <form id="schoolRecordForm" onsubmit="event.preventDefault(); saveSchoolRecord();" class="mt-5 space-y-4">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="text-sm font-medium">Record title
+          <input id="schoolRecordTitle" required maxlength="120" class="mt-1 w-full rounded-xl border p-3" placeholder="e.g. 2026 Annual Budget">
+        </label>
+        <label class="text-sm font-medium">Category
+          <input id="schoolRecordCategory" required maxlength="80" class="mt-1 w-full rounded-xl border p-3" placeholder="e.g. Finance, Facilities, Policy">
+        </label>
+      </div>
+      <label class="block text-sm font-medium">Description
+        <textarea id="schoolRecordDescription" maxlength="3000" class="mt-1 w-full rounded-xl border p-3" rows="3" placeholder="Notes or summary"></textarea>
+      </label>
+      <div>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h3 class="text-sm font-semibold">Custom data fields</h3>
+          <button type="button" onclick="addRecordField()" class="rounded-full border border-blue-800 px-4 py-2 text-sm font-semibold text-blue-800">Add a field</button>
+        </div>
+        <div id="schoolRecordFields" class="mt-3 space-y-2"></div>
+        <p class="mt-1 text-xs text-gray-500">Add any key/value details relevant to this record, such as a date, contact, amount, or reference number.</p>
+      </div>
+      <div>
+        <label for="schoolRecordFiles" class="block text-sm font-medium">Attachments (optional)</label>
+        <input id="schoolRecordFiles" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.jpg,.jpeg,.png,.webp" onchange="updateSchoolRecordFileNames()" class="mt-1 block w-full rounded-xl border p-3 text-sm">
+        <p id="schoolRecordFileNames" class="mt-1 text-xs text-gray-600">No files selected. Up to 5 files, 10 MB each (PDF, Office, CSV, or images).</p>
+      </div>
+      <button id="saveSchoolRecordButton" type="submit" class="rounded-full bg-green-700 px-6 py-3 font-bold text-white">Save school record</button>
+    </form>
+  </section>
+  <section class="rounded-2xl bg-white p-6 shadow">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="text-xl font-bold">Saved School Records</h2>
+        <p id="schoolRecordCount" class="mt-1 text-sm text-gray-600" role="status">Records load after admin login.</p>
+      </div>
+      <button type="button" onclick="loadSchoolRecords()" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh records</button>
+    </div>
+    <label for="schoolRecordSearch" class="sr-only">Search saved school records</label>
+    <input id="schoolRecordSearch" type="search" oninput="filterSchoolRecords()" placeholder="Search records, categories, custom fields, or attachments" class="mt-4 w-full rounded-xl border p-3">
+    <p id="schoolRecordStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p>
+    <div id="schoolRecordList" class="mt-4 space-y-3"></div>
+  </section>
+</div>
+
+<div id="tab-members" class="admin-tab-content hidden mt-6 overflow-x-auto rounded-2xl bg-white p-5 shadow">
   <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
     <div>
       <h2 class="font-bold text-xl">Saved Students and Staff</h2>
@@ -306,12 +762,13 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
   </table>
 </div>
 
-<div id="tab-monitor" class="hidden mt-6 space-y-6">
+<div id="tab-monitor" class="admin-tab-content hidden mt-6 space-y-6">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="font-bold text-xl">Staff Monitoring</h2>
     <button onclick="loadStaffMonitor()" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh activity</button>
   </div>
   <p id="monitorStatus" class="text-sm text-gray-600" role="status">Staff activity loads after admin login.</p>
+  <div id="monitorSummary" class="mt-4 grid gap-4 md:grid-cols-5"></div>
   <section class="overflow-x-auto rounded-2xl bg-white p-5 shadow">
     <h3 class="mb-3 font-bold">Staff Accounts</h3>
     <table class="w-full text-left text-sm"><thead class="bg-gray-100"><tr><th class="p-3">Name</th><th class="p-3">Email</th><th class="p-3">Role</th><th class="p-3">Account Created</th></tr></thead><tbody id="monitorStaffRows"></tbody></table>
@@ -330,6 +787,6 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
   </section>
 </div>
 
-<div id="tab-settings" class="hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">⚙️ Change My Password</h2><p class="text-xs text-gray-500">Unaweza badilisha password yako mwenyewe hapa.</p><input id="newPass" type="password" placeholder="New Password (min 6 chars)" class="w-full border p-3 rounded-xl mt-2"><button onclick="changeMyPassword()" class="w-full bg-black text-white py-3 rounded-full font-bold">Update Password</button><hr class="my-4"><h3 class="font-bold text-sm">Umesahau?</h3><p class="text-xs text-gray-500">System itakutumia link kwa email yako ureset.</p><button onclick="forgotPassword()" class="w-full border border-blue-800 text-blue-800 py-3 mt-2 rounded-full font-bold">Send Reset Email</button></div>
+<div id="tab-settings" class="admin-tab-content hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">⚙️ Change My Password</h2><p class="text-xs text-gray-500">Unaweza badilisha password yako mwenyewe hapa.</p><input id="newPass" type="password" placeholder="New Password (min 6 chars)" class="w-full border p-3 rounded-xl mt-2"><button onclick="changeMyPassword()" class="w-full bg-black text-white py-3 rounded-full font-bold">Update Password</button><hr class="my-4"><h3 class="font-bold text-sm">Umesahau?</h3><p class="text-xs text-gray-500">System itakutumia link kwa email yako ureset.</p><button onclick="forgotPassword()" class="w-full border border-blue-800 text-blue-800 py-3 mt-2 rounded-full font-bold">Send Reset Email</button></div>
 </div>
 </body></html>

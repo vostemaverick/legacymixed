@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isStaff() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/staff/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return isStaff() &&
+        get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.role in ['admin', 'principal'];
+    }
+
+    match /staff/{staffId} {
+      allow read: if signedIn() && (request.auth.uid == staffId || isAdmin());
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /students/{studentId} {
+      allow read: if signedIn() &&
+        (request.auth.uid == studentId || isStaff());
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        (isStaff() &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['meanGrade', 'feeBalance']));
+    }
+
+    match /schemesOfWork/{schemeId} {
+      allow read: if isAdmin();
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    match /results/{resultId} {
+      allow read: if signedIn() &&
+        (isAdmin() || resource.data.studentId == request.auth.uid);
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    match /notices/{noticeId} {
+      allow read: if true;
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    match /schoolRecords/{recordId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

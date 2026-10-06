@@ -22,57 +22,154 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
+    let students = [];
+
+    function setStatus(elementId, message, state = "info") {
+      const element = document.getElementById(elementId);
+      element.textContent = message;
+      element.className = `mt-2 text-sm ${state === "error" ? "text-red-700" : state === "success" ? "text-green-700" : "text-gray-600"}`;
+    }
+
+    function setButtonBusy(button, busy, busyText) {
+      if (busy) {
+        button.dataset.originalText = button.textContent;
+        button.textContent = busyText;
+        button.disabled = true;
+        button.classList.add("opacity-60", "cursor-wait");
+      } else {
+        button.textContent = button.dataset.originalText || button.textContent;
+        button.disabled = false;
+        button.classList.remove("opacity-60", "cursor-wait");
+      }
+    }
+
+    function renderStudents() {
+      const search = document.getElementById("studentSearch").value.trim().toLowerCase();
+      const filteredStudents = students.filter(({ id, data }) =>
+        [data.name, data.adm, data.class].some((value) => String(value || "").toLowerCase().includes(search)) ||
+        id.toLowerCase().includes(search)
+      );
+      const body = document.getElementById("studentList");
+      body.replaceChildren();
+
+      filteredStudents.forEach(({ id, data }) => {
+        const row = document.createElement("tr");
+        row.className = "border-b";
+        [data.name || "Unnamed student", data.adm || "", data.class || ""].forEach((value) => {
+          const cell = document.createElement("td");
+          cell.className = "p-3";
+          cell.textContent = value;
+          row.appendChild(cell);
+        });
+
+        const gradeCell = document.createElement("td");
+        gradeCell.className = "p-3";
+        const gradeInput = document.createElement("input");
+        gradeInput.id = `grade-${id}`;
+        gradeInput.value = data.meanGrade || "";
+        gradeInput.setAttribute("aria-label", `Mean grade for ${data.name || "student"}`);
+        gradeInput.className = "w-20 rounded border p-1";
+        gradeCell.appendChild(gradeInput);
+        row.appendChild(gradeCell);
+
+        const feeCell = document.createElement("td");
+        feeCell.className = "p-3";
+        const feeInput = document.createElement("input");
+        feeInput.id = `fee-${id}`;
+        feeInput.value = data.feeBalance ?? 0;
+        feeInput.setAttribute("aria-label", `Fee balance for ${data.name || "student"}`);
+        feeInput.className = "w-24 rounded border p-1";
+        feeCell.appendChild(feeInput);
+        row.appendChild(feeCell);
+
+        const actionCell = document.createElement("td");
+        actionCell.className = "p-3";
+        const saveButton = document.createElement("button");
+        saveButton.type = "button";
+        saveButton.textContent = "Save";
+        saveButton.className = "rounded bg-blue-800 px-3 py-1 text-xs text-white";
+        saveButton.addEventListener("click", () => window.saveStudent(id, saveButton));
+        actionCell.appendChild(saveButton);
+        row.appendChild(actionCell);
+        body.appendChild(row);
+      });
+
+      if (!filteredStudents.length) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 6;
+        cell.className = "p-4 text-center text-gray-500";
+        cell.textContent = students.length ? "No students match your search." : "No students found.";
+        row.appendChild(cell);
+        body.appendChild(row);
+      }
+
+      document.getElementById("studentCount").textContent =
+        `Showing ${filteredStudents.length} of ${students.length} students.`;
+    }
+    window.renderStudents = renderStudents;
+
+    async function loadStudents() {
+      setStatus("studentStatus", "Loading student records...");
+      try {
+        const querySnapshot = await getDocs(collection(db, "students"));
+        students = querySnapshot.docs
+          .map((studentDoc) => ({ id: studentDoc.id, data: studentDoc.data() }))
+          .sort((a, b) => String(a.data.name || "").localeCompare(String(b.data.name || "")));
+
+        const studentSelect = document.getElementById("resultStudent");
+        studentSelect.replaceChildren(new Option("Select a student", ""));
+        students.forEach(({ id, data }) => {
+          studentSelect.add(new Option(`${data.name || "Unnamed student"} (${data.adm || id})`, id));
+        });
+        renderStudents();
+        setStatus("studentStatus", `Loaded ${students.length} student records.`, "success");
+      } catch (error) {
+        console.error("Unable to load student records:", error);
+        setStatus("studentStatus", `Unable to load students: ${error.message}`, "error");
+        return false;
+      }
+    }
 
     window.loginStaff = async () => {
-      const email = document.getElementById('email').value;
+      const email = document.getElementById('email').value.trim();
       const password = document.getElementById('pass').value;
+      const button = document.getElementById("loginButton");
 
+      if (!email || !password) {
+        setStatus("loginStatus", "Enter your school email and password.", "error");
+        return;
+      }
+
+      setButtonBusy(button, true, "Signing in...");
+      setStatus("loginStatus", "Checking your staff account...");
       try {
         const credential = await signInWithEmailAndPassword(auth, email, password);
         const snapshot = await getDoc(doc(db, "staff", credential.user.uid));
 
         if (!snapshot.exists()) {
-          alert("Not staff");
+          await signOut(auth);
+          setStatus("loginStatus", "This account does not have a staff profile. Contact the school administrator.", "error");
           return;
         }
 
         document.getElementById('loginBox').classList.add('hidden');
         document.getElementById('dash').classList.remove('hidden');
-        document.getElementById('tName').innerText = snapshot.data().name;
+        document.getElementById('tName').textContent = snapshot.data().name || credential.user.email || "Staff member";
 
-        if ((snapshot.data().role || '').toLowerCase() === 'principal' || (snapshot.data().role || '').toLowerCase() === 'admin') {
+        const role = String(snapshot.data().role || "").trim().toLowerCase();
+        if (role === "principal" || role === "admin") {
           document.getElementById('adminLink').classList.remove('hidden');
         }
 
-        loadStudents();
+        await loadStudents();
       } catch (error) {
-        alert(error.message);
+        console.error("Staff portal sign-in or initial load failed:", error);
+        setStatus("loginStatus", `Unable to sign in or load the portal: ${error.message}`, "error");
+      } finally {
+        setButtonBusy(button, false);
       }
     };
-
-    async function loadStudents() {
-      const querySnapshot = await getDocs(collection(db, "students"));
-      let html = "";
-      const studentSelect = document.getElementById('resultStudent');
-      studentSelect.replaceChildren(new Option("Select a student", ""));
-
-      querySnapshot.forEach((document) => {
-        const student = document.data();
-        const option = new Option(`${student.name} (${student.adm || document.id})`, document.id);
-        studentSelect.add(option);
-        html += `
-          <tr class="border-b">
-            <td class="p-3">${student.name}</td>
-            <td class="p-3">${student.adm}</td>
-            <td class="p-3">${student.class}</td>
-            <td class="p-3"><input id="grade-${document.id}" value="${student.meanGrade || ''}" class="border p-1 w-20 rounded"></td>
-            <td class="p-3"><input id="fee-${document.id}" value="${student.feeBalance || 0}" class="border p-1 w-24 rounded"></td>
-            <td class="p-3"><button onclick="saveStudent('${document.id}')" class="bg-blue-800 text-white px-3 py-1 rounded text-xs">Save</button></td>
-          </tr>`;
-      });
-
-      document.getElementById('studentList').innerHTML = html || "<tr><td colspan=6 class='p-4 text-center'>No students</td></tr>";
-    }
 
     window.submitScheme = async () => {
       const subject = document.getElementById('schemeSubject').value.trim();
@@ -83,11 +180,13 @@
       const objectives = document.getElementById('schemeObjectives').value.trim();
 
       if (!subject || !studentClass || !term || !week || !topic || !objectives) {
-        alert("Complete all scheme of work fields before submitting.");
+        setStatus("schemeStatus", "Complete all scheme of work fields before submitting.", "error");
         return;
       }
 
       try {
+        const button = document.querySelector("#schemeForm button[type='submit']");
+        setButtonBusy(button, true, "Submitting...");
         await addDoc(collection(db, "schemesOfWork"), {
           subject,
           class: studentClass,
@@ -100,10 +199,12 @@
           submittedAt: new Date()
         });
         document.getElementById('schemeForm').reset();
-        alert("Scheme of work submitted.");
+        setStatus("schemeStatus", "Scheme of work submitted successfully.", "success");
       } catch (error) {
         console.error("Scheme submission failed:", error);
-        alert(`Unable to submit the scheme of work: ${error.message}`);
+        setStatus("schemeStatus", `Unable to submit the scheme of work: ${error.message}`, "error");
+      } finally {
+        setButtonBusy(document.querySelector("#schemeForm button[type='submit']"), false);
       }
     };
 
@@ -111,17 +212,21 @@
       const studentId = document.getElementById('resultStudent').value;
       const subject = document.getElementById('resultSubject').value.trim();
       const term = document.getElementById('resultTerm').value.trim();
-      const score = Number(document.getElementById('resultScore').value);
-      const maxScore = Number(document.getElementById('resultMaxScore').value);
+      const scoreInput = document.getElementById('resultScore').value;
+      const maxScoreInput = document.getElementById('resultMaxScore').value;
+      const score = Number(scoreInput);
+      const maxScore = Number(maxScoreInput);
       const studentOption = document.getElementById('resultStudent').selectedOptions[0];
 
-      if (!studentId || !subject || !term || !Number.isFinite(score) ||
+      if (!studentId || !subject || !term || !scoreInput || !maxScoreInput || !Number.isFinite(score) ||
           !Number.isFinite(maxScore) || score < 0 || maxScore <= 0 || score > maxScore) {
-        alert("Select a student, enter the subject and term, and enter a valid score.");
+        setStatus("resultStatus", "Select a student and enter a subject, term, and valid score not exceeding the maximum.", "error");
         return;
       }
 
       try {
+        const button = document.querySelector("#resultForm button[type='submit']");
+        setButtonBusy(button, true, "Saving...");
         await addDoc(collection(db, "results"), {
           studentId,
           studentName: studentOption.textContent,
@@ -130,40 +235,76 @@
           score,
           maxScore,
           submittedBy: auth.currentUser.uid,
+          submittedByEmail: auth.currentUser.email,
           submittedAt: new Date()
         });
         document.getElementById('resultForm').reset();
-        alert("Student result saved.");
+        setStatus("resultStatus", "Student result saved successfully.", "success");
       } catch (error) {
         console.error("Student result submission failed:", error);
-        alert(`Unable to save the student result: ${error.message}`);
+        setStatus("resultStatus", `Unable to save the student result: ${error.message}`, "error");
+      } finally {
+        setButtonBusy(document.querySelector("#resultForm button[type='submit']"), false);
       }
     };
 
-    window.saveStudent = async (id) => {
-      await updateDoc(doc(db, "students", id), {
-        meanGrade: document.getElementById(`grade-${id}`).value,
-        feeBalance: document.getElementById(`fee-${id}`).value
-      });
-      alert("Updated!");
+    window.saveStudent = async (id, button) => {
+      const grade = document.getElementById(`grade-${id}`).value.trim();
+      const feeBalance = document.getElementById(`fee-${id}`).value.trim();
+      if (!feeBalance || !Number.isFinite(Number(feeBalance)) || Number(feeBalance) < 0) {
+        setStatus("studentStatus", "Fee balance must be a valid amount of zero or more.", "error");
+        return;
+      }
+
+      setButtonBusy(button, true, "Saving...");
+      try {
+        await updateDoc(doc(db, "students", id), { meanGrade: grade, feeBalance });
+        const student = students.find((item) => item.id === id);
+        if (student) student.data = { ...student.data, meanGrade: grade, feeBalance };
+        setStatus("studentStatus", "Student record updated successfully.", "success");
+      } catch (error) {
+        console.error("Unable to update student record:", error);
+        setStatus("studentStatus", `Unable to update student: ${error.message}`, "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
     };
 
     window.postNotice = async () => {
-      const title = document.getElementById('nTitle').value;
-      const message = document.getElementById('nMsg').value;
+      const title = document.getElementById('nTitle').value.trim();
+      const message = document.getElementById('nMsg').value.trim();
 
       if (!title || !message) {
-        return alert("Please enter a title and message.");
+        setStatus("noticeStatus", "Enter both a title and a message.", "error");
+        return;
       }
 
-      await addDoc(collection(db, "notices"), {
-        title,
-        message,
-        date: new Date(),
-        by: auth.currentUser.email
-      });
+      const button = document.querySelector("#noticeForm button[type='submit']");
+      setButtonBusy(button, true, "Posting...");
+      try {
+        await addDoc(collection(db, "notices"), {
+          title,
+          message,
+          date: new Date(),
+          by: auth.currentUser.email
+        });
+        document.getElementById("noticeForm").reset();
+        setStatus("noticeStatus", "Notice posted successfully.", "success");
+      } catch (error) {
+        console.error("Notice posting failed:", error);
+        setStatus("noticeStatus", `Unable to post notice: ${error.message}`, "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    };
 
-      alert("Posted!");
+    window.refreshStudents = async (button) => {
+      setButtonBusy(button, true, "Refreshing...");
+      try {
+        await loadStudents();
+      } finally {
+        setButtonBusy(button, false);
+      }
     };
 
     window.logout = () => signOut(auth).then(() => location.reload());
@@ -179,7 +320,8 @@
     <h2 class="font-bold text-xl">Staff Login</h2>
     <input id="email" type="email" placeholder="Email" class="w-full border p-3 mt-5 rounded-xl">
     <input id="pass" type="password" placeholder="Password" class="w-full border p-3 mt-3 rounded-xl">
-    <button onclick="loginStaff()" class="w-full bg-blue-900 text-white py-3 mt-5 rounded-full font-bold">Login</button>
+    <button id="loginButton" onclick="loginStaff()" class="w-full bg-blue-900 text-white py-3 mt-5 rounded-full font-bold">Login</button>
+    <p id="loginStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p>
   </div>
 
   <div id="dash" class="hidden max-w-6xl mx-auto mt-6 p-4">
@@ -193,7 +335,16 @@
 
     <div class="grid md:grid-cols-3 gap-4 mt-6">
       <div class="md:col-span-2 bg-white rounded-2xl shadow p-5">
-        <h3 class="font-bold">Students</h3>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="font-bold">Students</h3>
+            <p id="studentCount" class="mt-1 text-xs text-gray-600" role="status">Student records load after login.</p>
+          </div>
+          <button type="button" onclick="refreshStudents(this)" class="rounded-full bg-blue-800 px-4 py-2 text-xs font-bold text-white">Refresh students</button>
+        </div>
+        <label for="studentSearch" class="sr-only">Search students</label>
+        <input id="studentSearch" type="search" oninput="renderStudents()" placeholder="Search by name, admission number, or class" class="mt-4 w-full rounded-xl border p-3">
+        <p id="studentStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite"></p>
         <div class="overflow-auto mt-4">
           <table class="w-full text-sm">
             <thead class="bg-gray-100">
@@ -213,9 +364,12 @@
 
       <div class="bg-white rounded-2xl shadow p-5">
         <h3 class="font-bold">Post Notice</h3>
-        <input id="nTitle" placeholder="Title" class="w-full border p-3 mt-4 rounded-xl">
-        <textarea id="nMsg" placeholder="Message" class="w-full border p-3 mt-3 rounded-xl h-28"></textarea>
-        <button onclick="postNotice()" class="w-full bg-yellow-500 text-blue-900 font-bold py-3 mt-3 rounded-full">Post Notice</button>
+        <form id="noticeForm" onsubmit="event.preventDefault(); postNotice();">
+          <input id="nTitle" required maxlength="120" placeholder="Title" class="w-full border p-3 mt-4 rounded-xl">
+          <textarea id="nMsg" required maxlength="2000" placeholder="Message" class="w-full border p-3 mt-3 rounded-xl h-28"></textarea>
+          <button type="submit" class="w-full bg-yellow-500 text-blue-900 font-bold py-3 mt-3 rounded-full">Post Notice</button>
+          <p id="noticeStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite"></p>
+        </form>
       </div>
     </div>
 
@@ -229,6 +383,7 @@
         <input id="schemeTopic" required placeholder="Topic" class="w-full border p-3 rounded-xl">
         <textarea id="schemeObjectives" required placeholder="Learning objectives" class="w-full border p-3 rounded-xl h-28"></textarea>
         <button type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Submit Scheme</button>
+        <p id="schemeStatus" class="text-sm text-gray-600" role="status" aria-live="polite"></p>
       </form>
 
       <form id="resultForm" onsubmit="event.preventDefault(); submitResult();" class="bg-white rounded-2xl shadow p-5 space-y-3">
@@ -241,6 +396,7 @@
         <input id="resultScore" required type="number" min="0" step="any" placeholder="Score" class="w-full border p-3 rounded-xl">
         <input id="resultMaxScore" required type="number" min="0.01" step="any" placeholder="Maximum score" class="w-full border p-3 rounded-xl">
         <button type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Result</button>
+        <p id="resultStatus" class="text-sm text-gray-600" role="status" aria-live="polite"></p>
       </form>
     </div>
   </div>
