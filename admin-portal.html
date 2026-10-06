@@ -3,9 +3,11 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, sendPasswordResetEmail, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 
 const firebaseConfig = { apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4", authDomain: "legacy-secondary.firebaseapp.com", projectId: "legacy-secondary", storageBucket: "legacy-secondary.firebasestorage.app", messagingSenderId: "929548927280", appId: "1:929548927280:web:f565195bf94b04ae5ec8f5" };
 const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app);
+const removeMemberCallable = httpsCallable(getFunctions(app), "removeMember");
 
 // For creating users without logging out admin
 const secondaryApp = initializeApp(firebaseConfig, "secondary");
@@ -42,6 +44,129 @@ function renderTableBody(elementId, rows, emptyMessage) {
     body.appendChild(row);
   });
 }
+
+let memberDirectory = [];
+
+function renderMembers(members, emptyMessage) {
+  const body = document.getElementById("memberRows");
+  body.replaceChildren();
+  if (!members.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 7;
+    cell.className = "p-3 text-center text-gray-500";
+    cell.textContent = emptyMessage;
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+
+  members.forEach((member) => {
+    const row = document.createElement("tr");
+    row.className = "border-b";
+    member.values.forEach((value) => {
+      const cell = document.createElement("td");
+      cell.className = "p-3 align-top";
+      cell.textContent = value ?? "";
+      row.appendChild(cell);
+    });
+    const actionCell = document.createElement("td");
+    actionCell.className = "p-3";
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "rounded-full bg-red-700 px-3 py-1 text-xs font-bold text-white";
+    removeButton.textContent = "Remove";
+    removeButton.addEventListener("click", () => window.removeMember(member));
+    actionCell.appendChild(removeButton);
+    row.appendChild(actionCell);
+    body.appendChild(row);
+  });
+}
+
+window.filterMembers = () => {
+  const search = document.getElementById("memberSearch").value.trim().toLowerCase();
+  const filteredMembers = memberDirectory.filter((member) =>
+    member.values.join(" ").toLowerCase().includes(search)
+  );
+  renderMembers(filteredMembers, "No members match your search.");
+  document.getElementById("memberCount").textContent =
+    `Showing ${filteredMembers.length} of ${memberDirectory.length} saved members.`;
+};
+
+window.loadMembers = async () => {
+  const status = document.getElementById("memberCount");
+  status.textContent = "Loading saved students and staff...";
+  try {
+    const [studentsSnapshot, staffSnapshot] = await Promise.all([
+      getDocs(collection(db, "students")),
+      getDocs(collection(db, "staff"))
+    ]);
+
+    memberDirectory = [
+      ...studentsSnapshot.docs.map((memberDoc) => {
+        const member = memberDoc.data();
+        return {
+          memberId: memberDoc.id,
+          memberType: "students",
+          values: [
+            "Student",
+            member.name || "Unnamed student",
+            member.email || "",
+            member.adm || "",
+            member.class || "",
+            formatDate(member.createdAt)
+          ]
+        };
+      }),
+      ...staffSnapshot.docs.map((memberDoc) => {
+        const member = memberDoc.data();
+        return {
+          memberId: memberDoc.id,
+          memberType: "staff",
+          role: (member.role || "").toLowerCase(),
+          values: [
+            "Staff",
+            member.name || "Unnamed staff member",
+            member.email || "",
+            member.role || "Not specified",
+            "",
+            formatDate(member.createdAt)
+          ]
+        };
+      })
+    ].sort((a, b) => a.values[1].localeCompare(b.values[1]));
+
+    window.filterMembers();
+  } catch (error) {
+    console.error("Unable to load saved members:", error);
+    memberDirectory = [];
+    renderMembers([], "Unable to load saved members.");
+    status.textContent = `Unable to load saved members: ${error.message}`;
+  }
+};
+
+window.removeMember = async (member) => {
+  const [memberType, name, email] = member.values;
+  if (memberType === "Staff" && ["admin", "principal"].includes(member.role)) {
+    alert("Admin and principal accounts cannot be removed from this portal.");
+    return;
+  }
+  if (!window.confirm(`Permanently remove ${memberType.toLowerCase()} ${name} (${email})? Their Firebase account and profile will be deleted. Existing submissions and results will be retained.`)) {
+    return;
+  }
+
+  try {
+    await removeMemberCallable({
+      memberId: member.memberId,
+      memberType: member.memberType
+    });
+    await Promise.all([loadMembers(), loadStaffMonitor()]);
+    alert(`${memberType} removed.`);
+  } catch (error) {
+    console.error("Unable to remove member:", error);
+    alert(`Unable to remove ${memberType.toLowerCase()}: ${error.message}`);
+  }
+};
 
 window.loadStaffMonitor = async () => {
   const status = document.getElementById("monitorStatus");
@@ -124,18 +249,18 @@ window.loginAdmin = async () => {
     if(!snap.exists() || !['principal','admin'].includes((snap.data().role||'').toLowerCase())){ alert("Wewe si Admin/Principal"); await signOut(auth); return; }
     document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
     document.getElementById('aName').innerText=snap.data().name;
-    await loadStaffMonitor();
+    await Promise.all([loadStaffMonitor(), loadMembers()]);
   }catch(err){ alert(err.message) }
 }
 window.addStudent = async () => {
  const name=document.getElementById('sname').value; const adm=document.getElementById('sadm').value; const cls=document.getElementById('scls').value; const email=document.getElementById('semail').value; const pass=document.getElementById('spass').value; const fee=document.getElementById('sfee').value;
  if(!name||!email||!pass) return alert("Jaza name,email,pass");
- try{ const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); await setDoc(doc(db,"students",cred.user.uid),{name,adm,class:cls,feeBalance:fee,meanGrade:"B+",email,createdAt:new Date()}); alert("Student added: "+email); }catch(e){alert(e.message)}
+ try{ const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); await setDoc(doc(db,"students",cred.user.uid),{name,adm,class:cls,feeBalance:fee,meanGrade:"B+",email,createdAt:new Date()}); await loadMembers(); alert("Student added: "+email); }catch(e){alert(e.message)}
 }
 window.addStaff = async () => {
  const name=document.getElementById('tname').value; const role=document.getElementById('trole').value; const email=document.getElementById('temail').value; const pass=document.getElementById('tpass').value;
  if(!name||!email||!pass) return alert("Jaza name,email,pass");
- try{ const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); await setDoc(doc(db,"staff",cred.user.uid),{name,email,role:role.toLowerCase(),createdAt:new Date()}); alert("Staff added: "+email); }catch(e){alert(e.message)}
+ try{ const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); await setDoc(doc(db,"staff",cred.user.uid),{name,email,role:role.toLowerCase(),createdAt:new Date()}); await Promise.all([loadMembers(), loadStaffMonitor()]); alert("Staff added: "+email); }catch(e){alert(e.message)}
 }
 window.changeMyPassword = async () => {
   const newPass=document.getElementById('newPass').value; if(newPass.length<6) return alert("Password lazima 6+ characters");
@@ -145,7 +270,7 @@ window.forgotPassword = async () => {
   const e=document.getElementById('email').value; if(!e) return alert("Weka email yako kwanza hapo juu");
   try{ await sendPasswordResetEmail(auth,e); alert("Reset link imetumwa kwa: "+e+" - Check inbox/spam"); }catch(err){ alert(err.message) }
 }
-window.showTab=(id)=>{ document.getElementById('tab-student').classList.add('hidden'); document.getElementById('tab-staff').classList.add('hidden'); document.getElementById('tab-settings').classList.add('hidden'); document.getElementById('tab-monitor').classList.add('hidden'); document.getElementById(id).classList.remove('hidden'); }
+window.showTab=(id)=>{ document.getElementById('tab-student').classList.add('hidden'); document.getElementById('tab-staff').classList.add('hidden'); document.getElementById('tab-settings').classList.add('hidden'); document.getElementById('tab-monitor').classList.add('hidden'); document.getElementById('tab-members').classList.add('hidden'); document.getElementById(id).classList.remove('hidden'); }
 window.logout=()=>signOut(auth).then(()=>location.reload());
 </script></head>
 <body class="bg-gray-100 min-h-screen">
@@ -160,11 +285,26 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
 
 <div id="dash" class="hidden max-w-5xl mx-auto p-4 mt-4">
 <h2 class="text-xl font-bold">Welcome <span id="aName"></span></h2>
-<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
+<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
 
 <div id="tab-student" class="bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" placeholder="Password" class="w-full border p-3 rounded-xl"><input id="sfee" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button onclick="addStudent()" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button></div>
 
 <div id="tab-staff" class="hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Staff</h2><input id="tname" placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="trole" placeholder="Role: principal, admin, teacher" class="w-full border p-3 rounded-xl"><input id="temail" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="tpass" placeholder="Password" class="w-full border p-3 rounded-xl"><button onclick="addStaff()" class="w-full bg-blue-900 text-white py-3 rounded-full font-bold">Save Staff</button></div>
+
+<div id="tab-members" class="hidden mt-6 overflow-x-auto rounded-2xl bg-white p-5 shadow">
+  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h2 class="font-bold text-xl">Saved Students and Staff</h2>
+      <p id="memberCount" class="mt-1 text-sm text-gray-600" role="status">Members load after admin login.</p>
+    </div>
+    <button onclick="loadMembers()" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh members</button>
+  </div>
+  <input id="memberSearch" type="search" oninput="filterMembers()" placeholder="Search by name, email, admission number, class, or role" class="mb-4 w-full rounded-xl border p-3">
+  <table class="w-full text-left text-sm">
+    <thead class="bg-gray-100"><tr><th class="p-3">Type</th><th class="p-3">Name</th><th class="p-3">Email</th><th class="p-3">Admission No. / Role</th><th class="p-3">Class</th><th class="p-3">Added</th><th class="p-3">Action</th></tr></thead>
+    <tbody id="memberRows"></tbody>
+  </table>
+</div>
 
 <div id="tab-monitor" class="hidden mt-6 space-y-6">
   <div class="flex flex-wrap items-center justify-between gap-3">
