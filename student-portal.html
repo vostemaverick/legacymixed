@@ -6,12 +6,13 @@ import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10
 const firebaseConfig = { apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4", authDomain: "legacy-secondary.firebaseapp.com", projectId: "legacy-secondary", storageBucket: "legacy-secondary.firebasestorage.app", messagingSenderId: "929548927280", appId: "1:929548927280:web:f565195bf94b04ae5ec8f5" };
 const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app);
 window.login = async () => {
- const e=document.getElementById('email').value; const p=document.getElementById('pass').value;
+ const e=document.getElementById('email').value.trim(); const p=document.getElementById('pass').value;
+ if(!e||!p){ alert("Enter your school email and password."); return; }
  try{ const c=await signInWithEmailAndPassword(auth,e,p); const s=await getDoc(doc(db,"students",c.user.uid));
- if(!s.exists()){ alert("Not a student account"); return;} const d=s.data();
+ if(!s.exists()){ await signOut(auth); alert("No student profile is linked to this account. Contact the school administrator."); return;} const d=s.data();
  document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
  document.getElementById('sName').innerText=d.name; document.getElementById('sAdm').innerText=d.adm; document.getElementById('sClass').innerText=d.class; document.getElementById('sBal').innerText="KES "+d.feeBalance; document.getElementById('sMean').innerText=d.meanGrade || "N/A";
- }catch(err){alert(err.message)}
+ }catch(err){console.error("Student portal Firebase login failed:",err); alert("Unable to sign in or load your student profile. Check your connection and credentials, then try again. "+err.message)}
 }
 window.logout=()=>signOut(auth).then(()=>location.reload());
 </script></head>
