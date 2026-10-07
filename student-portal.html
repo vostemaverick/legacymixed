@@ -3,8 +3,10 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import { getFirestore, doc, getDoc, collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getStorage, ref, getBlob } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 const firebaseConfig = { apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4", authDomain: "legacy-secondary.firebaseapp.com", projectId: "legacy-secondary", storageBucket: "legacy-secondary.firebasestorage.app", messagingSenderId: "929548927280", appId: "1:929548927280:web:f565195bf94b04ae5ec8f5" };
-const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app);
+const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app); const storage = getStorage(app);
+let publishedDocuments = [];
 function setStatus(elementId, message, error = false) {
  const status = document.getElementById(elementId);
  status.textContent = message;
@@ -19,10 +21,89 @@ window.login = async () => {
  if(!s.exists()){ await signOut(auth); setStatus("loginStatus","No student profile is linked to this account. Contact the school administrator.",true); return;} const d=s.data();
  document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
  document.getElementById('sName').textContent=d.name || c.user.email; document.getElementById('sAdm').textContent=d.adm || "Not recorded"; document.getElementById('sClass').textContent=d.class || "Not recorded"; document.getElementById('sBal').textContent="KES "+(d.feeBalance ?? "Not recorded"); document.getElementById('sMean').textContent=d.meanGrade || "N/A";
- await loadResults(c.user.uid);
+ await Promise.all([loadResults(c.user.uid), loadPublishedDocuments()]);
  }catch(err){console.error("Student portal Firebase login failed:",err); setStatus("loginStatus",`Unable to sign in or load your student profile: ${err.message}`,true)}
  finally{button.disabled=false;button.textContent="Login"}
 }
+function renderPublishedDocuments(category, listId, emptyMessage) {
+ const list=document.getElementById(listId);
+ const documents=publishedDocuments.filter((item)=>category==="scheme" ? item.category==="scheme" : item.category!=="scheme");
+ list.replaceChildren();
+ if(!documents.length){
+  const empty=document.createElement("p");
+  empty.className="rounded-xl border border-dashed p-4 text-center text-sm text-gray-500";
+  empty.textContent=emptyMessage;
+  list.appendChild(empty);
+  return;
+ }
+ documents.forEach((documentRecord)=>{
+  const card=document.createElement("article");
+  card.className="rounded-xl border p-4";
+  const title=document.createElement("h4");
+  title.className="font-semibold";
+  title.textContent=documentRecord.title || "School document";
+  const description=document.createElement("p");
+  description.className="mt-1 whitespace-pre-wrap text-sm text-gray-600";
+  description.textContent=documentRecord.description || "";
+  card.append(title);
+  if(documentRecord.description) card.appendChild(description);
+  const files=document.createElement("div");
+  files.className="mt-3 flex flex-wrap gap-2";
+  (documentRecord.files || []).forEach((file)=>{
+   const button=document.createElement("button");
+   button.type="button";
+   button.className="rounded-full bg-blue-800 px-4 py-2 text-sm font-semibold text-white";
+   button.textContent=`Download ${file.name}`;
+   button.addEventListener("click",()=>window.downloadPublishedFile(file,button));
+   files.appendChild(button);
+  });
+  card.appendChild(files);
+  list.appendChild(card);
+ });
+}
+async function loadPublishedDocuments(){
+ const status=document.getElementById("documentsStatus");
+ status.textContent="Loading school documents...";
+ try{
+  const snapshot=await getDocs(collection(db,"publishedDocuments"));
+  publishedDocuments=snapshot.docs.map((document)=>({id:document.id,...document.data()}));
+  renderPublishedDocuments("school","schoolDocumentsList","No school documents have been published.");
+  renderPublishedDocuments("scheme","schemeDocumentsList","No scheme documents have been published.");
+  status.textContent=`${publishedDocuments.length} document${publishedDocuments.length===1?"":"s"} available.`;
+ }catch(error){
+  console.error("Unable to load student-facing documents:",error);
+  status.textContent=`Unable to load school documents: ${error.message}`;
+ }
+}
+window.refreshPublishedDocuments=async(button)=>{
+ button.disabled=true;
+ const label=button.textContent;
+ button.textContent="Refreshing...";
+ try{await loadPublishedDocuments()}finally{button.disabled=false;button.textContent=label}
+};
+window.downloadPublishedFile=async(file,button)=>{
+ button.disabled=true;
+ const originalText=button.textContent;
+ button.textContent="Downloading...";
+ try{
+  if(!auth.currentUser) throw new Error("Please sign in again to download this file.");
+  const blob=await getBlob(ref(storage,file.storagePath));
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement("a");
+  link.href=url;
+  link.download=file.name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }catch(error){
+  console.error("Unable to download published school document:",error);
+  document.getElementById("documentsStatus").textContent=`Unable to download ${file.name}: ${error.message}`;
+ }finally{
+  button.disabled=false;
+  button.textContent=originalText;
+ }
+};
 async function loadResults(studentId){
  const body=document.getElementById('resultRows');
  body.replaceChildren(); setStatus("resultStatus","Loading your results...");
@@ -77,4 +158,4 @@ window.logout=()=>signOut(auth).then(()=>location.reload()).catch((error)=>setSt
 </script></head>
 <body class="bg-gray-50"><nav class="bg-blue-800 text-white p-4 flex justify-between"><a href="index.html" class="font-bold">LEGACY MIXED</a><a href="staff-portal.html" class="text-xs border px-3 py-1 rounded-full">Staff Portal</a></nav>
 <div id="loginBox" class="max-w-sm mx-auto mt-20 bg-white p-8 rounded-2xl shadow"><h2 class="font-bold text-xl text-blue-800">Student Portal</h2><p class="text-xs text-gray-500 mt-1">Login with your school email</p><input id="email" type="email" placeholder="student@legacy.sc.ke" class="w-full border p-3 mt-5 rounded-xl"><input id="pass" type="password" placeholder="Password" class="w-full border p-3 mt-3 rounded-xl"><button id="loginButton" onclick="login()" class="w-full bg-blue-800 text-white py-3 mt-5 rounded-full font-bold">Login</button><p id="loginStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p><p class="text-[11px] text-center mt-3">Contact admin: <a href="tel:0796206783" class="text-blue-800 underline">0796 206 783</a></p></div>
-<div id="dash" class="hidden max-w-3xl mx-auto mt-8 p-6"><div class="flex justify-between items-center"><div><h2 class="text-2xl font-bold">Hello, <span id="sName"></span></h2><p class="text-sm">Admission No: <span id="sAdm"></span> | Class: <span id="sClass"></span></p></div><button onclick="logout()" class="text-sm text-red-600">Logout</button></div><div class="grid grid-cols-2 md:grid-cols-3 gap-4 mt-6"><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Fee Balance</p><p id="sBal" class="font-bold text-lg mt-1"></p></div><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Mean Grade</p><p id="sMean" class="font-bold text-lg mt-1"></p></div><div class="bg-blue-800 text-white p-5 rounded-2xl shadow"><p class="text-xs">Contact School</p><a href="https://wa.me/254796206783" class="font-bold text-sm underline">WhatsApp 0796 206 783</a></div></div><section class="bg-white p-5 mt-6 rounded-2xl shadow"><div class="flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold text-lg">Subject Results</h3><button onclick="refreshResults(this)" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh results</button></div><p id="resultStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite"></p><div class="overflow-x-auto mt-3"><table class="w-full text-sm text-left"><thead><tr class="bg-gray-100"><th class="p-3">Subject</th><th class="p-3">Term</th><th class="p-3">Score</th></tr></thead><tbody id="resultRows"></tbody></table></div></section></div></body></html>
+<div id="dash" class="hidden max-w-3xl mx-auto mt-8 p-6"><div class="flex justify-between items-center"><div><h2 class="text-2xl font-bold">Hello, <span id="sName"></span></h2><p class="text-sm">Admission No: <span id="sAdm"></span> | Class: <span id="sClass"></span></p></div><button onclick="logout()" class="text-sm text-red-600">Logout</button></div><div class="grid grid-cols-2 md:grid-cols-3 gap-4 mt-6"><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Fee Balance</p><p id="sBal" class="font-bold text-lg mt-1"></p></div><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Mean Grade</p><p id="sMean" class="font-bold text-lg mt-1"></p></div><div class="bg-blue-800 text-white p-5 rounded-2xl shadow"><p class="text-xs">Contact School</p><a href="https://wa.me/254796206783" class="font-bold text-sm underline">WhatsApp 0796 206 783</a></div></div><section class="bg-white p-5 mt-6 rounded-2xl shadow"><div class="flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold text-lg">School Documents and Schemes</h3><button onclick="refreshPublishedDocuments(this)" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh documents</button></div><p id="documentsStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite">Documents load after student login.</p><h4 class="mt-4 font-semibold">School documents</h4><div id="schoolDocumentsList" class="mt-2 space-y-3"></div><h4 class="mt-5 font-semibold">Schemes of work</h4><div id="schemeDocumentsList" class="mt-2 space-y-3"></div></section><section class="bg-white p-5 mt-6 rounded-2xl shadow"><div class="flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold text-lg">Subject Results</h3><button onclick="refreshResults(this)" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh results</button></div><p id="resultStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite"></p><div class="overflow-x-auto mt-3"><table class="w-full text-sm text-left"><thead><tr class="bg-gray-100"><th class="p-3">Subject</th><th class="p-3">Term</th><th class="p-3">Score</th></tr></thead><tbody id="resultRows"></tbody></table></div></section></div></body></html>

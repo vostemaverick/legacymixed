@@ -6,14 +6,40 @@ service firebase.storage {
         firestore.get(/databases/(default)/documents/staff/$(request.auth.uid)).data.role in ['admin', 'principal'];
     }
 
+    function isSchoolMember() {
+      return request.auth != null &&
+        (firestore.exists(/databases/(default)/documents/students/$(request.auth.uid)) ||
+          firestore.exists(/databases/(default)/documents/staff/$(request.auth.uid)));
+    }
+
+    function isSupportedSchoolRecord() {
+      return request.resource.contentType.matches(
+        'application/pdf|application/msword|application/vnd[.]ms-excel|application/vnd[.]openxmlformats-officedocument[.]wordprocessingml[.]document|application/vnd[.]openxmlformats-officedocument[.]spreadsheetml[.]sheet|text/csv|image/jpeg|image/png|image/webp'
+      );
+    }
+
+    function isSupportedPublishedDocument() {
+      return request.resource.contentType.matches(
+        'application/(pdf|msword|vnd[.]ms-excel|vnd[.]ms-powerpoint|rtf|vnd[.]openxmlformats-officedocument[.](wordprocessingml[.]document|spreadsheetml[.]sheet|presentationml[.]presentation)|vnd[.]oasis[.]opendocument[.](text|spreadsheet|presentation))|text/(plain|csv)|image/(jpeg|png|webp)'
+      );
+    }
+
     match /school-records/{adminUid}/{recordId}/{fileName} {
       allow read, delete: if isAdmin();
       allow create: if isAdmin() &&
         request.auth.uid == adminUid &&
         request.resource.size <= 10 * 1024 * 1024 &&
-        request.resource.contentType.matches(
-          'application/pdf|application/msword|application/vnd.openxmlformats-officedocument.wordprocessingml.document|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet|text/csv|image/jpeg|image/png|image/webp'
-        );
+        isSupportedSchoolRecord();
+      allow update: if false;
+    }
+
+    match /published-school-documents/{adminUid}/{documentId}/{fileName} {
+      allow read: if isSchoolMember();
+      allow create: if isAdmin() &&
+        request.auth.uid == adminUid &&
+        request.resource.size <= 20 * 1024 * 1024 &&
+        isSupportedPublishedDocument();
+      allow delete: if isAdmin();
       allow update: if false;
     }
 

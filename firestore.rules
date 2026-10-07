@@ -15,6 +15,12 @@ service cloud.firestore {
         get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.role in ['admin', 'principal'];
     }
 
+    function isSchoolMember() {
+      return signedIn() &&
+        (exists(/databases/$(database)/documents/students/$(request.auth.uid)) ||
+          exists(/databases/$(database)/documents/staff/$(request.auth.uid)));
+    }
+
     match /staff/{staffId} {
       allow read: if signedIn() && (request.auth.uid == staffId || isAdmin());
       allow create, update, delete: if isAdmin();
@@ -50,6 +56,11 @@ service cloud.firestore {
 
     match /schoolRecords/{recordId} {
       allow read, create, update, delete: if isAdmin();
+    }
+
+    match /publishedDocuments/{documentId} {
+      allow read: if isSchoolMember();
+      allow create, update, delete: if isAdmin();
     }
 
     match /{document=**} {

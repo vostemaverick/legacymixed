@@ -100,12 +100,21 @@ const schoolRecordContentTypes = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xls: "application/vnd.ms-excel",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   csv: "text/csv",
+  txt: "text/plain",
+  rtf: "application/rtf",
+  odt: "application/vnd.oasis.opendocument.text",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  odp: "application/vnd.oasis.opendocument.presentation",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   png: "image/png",
   webp: "image/webp"
 };
+
+let publishedDocuments = [];
 
 function getSchoolRecordContentType(file) {
   return schoolRecordContentTypes[file.name.split(".").pop().toLowerCase()];
@@ -415,6 +424,199 @@ window.updateSchoolRecordFileNames = () => {
     files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected: ${files.map((file) => file.name).join(", ")}` : "No files selected.";
 };
 
+function setPublishedDocumentStatus(message, state = "info") {
+  const status = document.getElementById("publishedDocumentStatus");
+  status.textContent = message;
+  status.className = `mt-3 text-sm ${state === "error" ? "text-red-700" : state === "success" ? "text-green-700" : "text-gray-600"}`;
+}
+
+function renderPublishedDocuments() {
+  const list = document.getElementById("publishedDocumentList");
+  list.replaceChildren();
+  if (!publishedDocuments.length) {
+    const empty = document.createElement("p");
+    empty.className = "rounded-xl border border-dashed p-6 text-center text-sm text-gray-500";
+    empty.textContent = "No documents have been published.";
+    list.appendChild(empty);
+  }
+
+  publishedDocuments.forEach((documentRecord) => {
+    const card = document.createElement("article");
+    card.className = "flex flex-wrap items-start justify-between gap-3 rounded-xl border p-4";
+    const details = document.createElement("div");
+    const title = document.createElement("h3");
+    title.className = "font-semibold";
+    title.textContent = documentRecord.title || "Untitled document";
+    const metadata = document.createElement("p");
+    metadata.className = "mt-1 text-xs text-gray-600";
+    metadata.textContent = `${documentRecord.category === "scheme" ? "Scheme document" : "School document"} · ${(documentRecord.files || []).length} file(s) · ${formatDate(documentRecord.createdAt)}`;
+    details.append(title, metadata);
+    if (documentRecord.description) {
+      const description = document.createElement("p");
+      description.className = "mt-2 whitespace-pre-wrap text-sm text-gray-700";
+      description.textContent = documentRecord.description;
+      details.appendChild(description);
+    }
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-700 hover:bg-red-50";
+    deleteButton.textContent = "Delete";
+    deleteButton.addEventListener("click", () => window.deletePublishedDocument(documentRecord));
+    card.append(details, deleteButton);
+
+    const files = document.createElement("ul");
+    files.className = "mt-3 w-full space-y-1";
+    (documentRecord.files || []).forEach((file) => {
+      const item = document.createElement("li");
+      item.className = "text-sm text-gray-700";
+      item.textContent = `${file.name} (${(file.size / 1048576).toFixed(1)} MB)`;
+      files.appendChild(item);
+    });
+    card.appendChild(files);
+    list.appendChild(card);
+  });
+  document.getElementById("publishedDocumentCount").textContent =
+    `${publishedDocuments.length} document${publishedDocuments.length === 1 ? "" : "s"} published to signed-in students and staff.`;
+}
+
+async function uploadPublishedFile(file, storagePath) {
+  const task = uploadBytesResumable(ref(storage, storagePath), file, {
+    contentType: getSchoolRecordContentType(file)
+  });
+  const snapshot = await new Promise((resolve, reject) => {
+    task.on("state_changed", (progress) => {
+      const percent = Math.round(progress.bytesTransferred / progress.totalBytes * 100);
+      setPublishedDocumentStatus(`Uploading ${file.name}: ${percent}%`);
+    }, reject, () => resolve(task.snapshot));
+  });
+  return {
+    name: file.name,
+    size: file.size,
+    contentType: snapshot.metadata.contentType,
+    storagePath
+  };
+}
+
+window.loadPublishedDocuments = async () => {
+  setPublishedDocumentStatus("Loading published documents...");
+  try {
+    await requireAdmin();
+    const snapshot = await getDocs(collection(db, "publishedDocuments"));
+    publishedDocuments = snapshot.docs
+      .map((documentSnapshot) => ({ id: documentSnapshot.id, ...documentSnapshot.data() }))
+      .sort((a, b) => {
+        const dateOf = (value) => value && typeof value.toDate === "function" ? value.toDate().getTime() : 0;
+        return dateOf(b.createdAt) - dateOf(a.createdAt);
+      });
+    renderPublishedDocuments();
+    setPublishedDocumentStatus("Published document list is up to date.", "success");
+    return true;
+  } catch (error) {
+    console.error("Unable to load published documents:", error);
+    setPublishedDocumentStatus(`Unable to load published documents: ${error.message}`, "error");
+    return false;
+  }
+};
+
+window.publishDocuments = async () => {
+  const form = document.getElementById("publishDocumentForm");
+  if (!form.reportValidity()) return;
+  const title = document.getElementById("publishedDocumentTitle").value.trim();
+  const category = document.getElementById("publishedDocumentCategory").value;
+  const description = document.getElementById("publishedDocumentDescription").value.trim();
+  const files = Array.from(document.getElementById("publishedDocumentFiles").files);
+  const maxFiles = 10;
+  const maxFileSize = 20 * 1024 * 1024;
+  if (!title || !files.length || files.length > maxFiles ||
+      files.some((file) => !getSchoolRecordContentType(file) || file.size > maxFileSize)) {
+    setPublishedDocumentStatus("Enter a title and attach 1–10 supported document files, each no larger than 20 MB.", "error");
+    return;
+  }
+
+  const button = document.getElementById("publishDocumentsButton");
+  button.disabled = true;
+  button.textContent = "Publishing...";
+  const uploadedFiles = [];
+  let recordWritten = false;
+  try {
+    await requireAdmin();
+    const documentRef = doc(collection(db, "publishedDocuments"));
+    for (const [index, file] of files.entries()) {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storagePath = `published-school-documents/${auth.currentUser.uid}/${documentRef.id}/${Date.now()}-${index}-${safeName}`;
+      uploadedFiles.push(await uploadPublishedFile(file, storagePath));
+    }
+
+    await setDoc(documentRef, {
+      title,
+      category,
+      description,
+      files: uploadedFiles,
+      createdAt: new Date(),
+      createdBy: auth.currentUser.uid,
+      createdByEmail: auth.currentUser.email || ""
+    });
+    recordWritten = true;
+    form.reset();
+    document.getElementById("publishedDocumentFileNames").textContent = "No files selected.";
+    if (await window.loadPublishedDocuments()) {
+      setPublishedDocumentStatus("Documents published to signed-in students and staff.", "success");
+    } else {
+      setPublishedDocumentStatus("Documents were published, but the list could not be refreshed.", "error");
+    }
+  } catch (error) {
+    console.error("Unable to publish documents:", error);
+    const cleanupErrors = [];
+    if (!recordWritten) {
+      for (const file of uploadedFiles) {
+        try {
+          await deleteObject(ref(storage, file.storagePath));
+        } catch (cleanupError) {
+          cleanupErrors.push(`${file.name}: ${cleanupError.message}`);
+          console.error("Unable to clean up an incomplete published-document upload:", cleanupError);
+        }
+      }
+    }
+    const cleanupMessage = cleanupErrors.length ? ` Uploaded-file cleanup failed: ${cleanupErrors.join("; ")}` : "";
+    setPublishedDocumentStatus(`Unable to publish documents: ${error.message}${cleanupMessage}`, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Publish documents";
+  }
+};
+
+window.deletePublishedDocument = async (documentRecord) => {
+  if (!window.confirm(`Remove "${documentRecord.title || "Untitled document"}" and its files from student and staff portals?`)) return;
+  try {
+    await requireAdmin();
+    await deleteDoc(doc(db, "publishedDocuments", documentRecord.id));
+    publishedDocuments = publishedDocuments.filter((item) => item.id !== documentRecord.id);
+    renderPublishedDocuments();
+    const cleanupErrors = [];
+    for (const file of documentRecord.files || []) {
+      try {
+        await deleteObject(ref(storage, file.storagePath));
+      } catch (error) {
+        cleanupErrors.push(`${file.name}: ${error.message}`);
+        console.error("Unable to delete published document file:", error);
+      }
+    }
+    setPublishedDocumentStatus(
+      cleanupErrors.length ? `Document removed, but file cleanup failed: ${cleanupErrors.join("; ")}` : "Document removed from student and staff portals.",
+      cleanupErrors.length ? "error" : "success"
+    );
+  } catch (error) {
+    console.error("Unable to delete published document:", error);
+    setPublishedDocumentStatus(`Unable to remove published document: ${error.message}`, "error");
+  }
+};
+
+window.updatePublishedDocumentFileNames = () => {
+  const files = Array.from(document.getElementById("publishedDocumentFiles").files);
+  document.getElementById("publishedDocumentFileNames").textContent =
+    files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected: ${files.map((file) => file.name).join(", ")}` : "No files selected.";
+};
+
 let memberDirectory = [];
 
 function renderMembers(members, emptyMessage) {
@@ -667,7 +869,7 @@ window.loginAdmin = async () => {
     if(!snap.exists() || !['principal','admin'].includes((snap.data().role||'').trim().toLowerCase())){ await signOut(auth); status.textContent="Access denied. Sign in with an admin or principal account."; status.className="mt-3 text-sm text-red-700"; return; }
     document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
     document.getElementById('aName').textContent=snap.data().name || cred.user.email;
-    await Promise.all([loadStaffMonitor(), loadMembers(), loadSchoolRecords()]);
+    await Promise.all([loadStaffMonitor(), loadMembers(), loadSchoolRecords(), loadPublishedDocuments()]);
   }catch(err){ console.error("Admin portal sign-in failed:",err); status.textContent=`Unable to sign in: ${err.message}`; status.className="mt-3 text-sm text-red-700"; }
   finally{ button.disabled=false; button.textContent="Login"; }
 }
@@ -740,7 +942,7 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
 
 <div id="dash" class="hidden max-w-5xl mx-auto p-4 mt-4">
 <h2 class="text-xl font-bold">Welcome <span id="aName"></span></h2>
-<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-school-records')" class="bg-green-700 text-white px-5 py-2 rounded-full text-sm">School Records</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
+<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-school-records')" class="bg-green-700 text-white px-5 py-2 rounded-full text-sm">School Records</button><button onclick="showTab('tab-published-documents')" class="bg-teal-700 text-white px-5 py-2 rounded-full text-sm">Publish Documents</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
 
 <form id="tab-student" onsubmit="event.preventDefault(); addStudent();" class="admin-tab-content bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" required placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" required type="email" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" required minlength="6" type="password" placeholder="Password (min 6 characters)" class="w-full border p-3 rounded-xl"><input id="sfee" type="number" min="0" step="0.01" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button id="addStudentButton" type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button><p id="studentAddStatus" class="text-sm" role="status" aria-live="polite"></p></form>
 
@@ -792,6 +994,46 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
     <input id="schoolRecordSearch" type="search" oninput="filterSchoolRecords()" placeholder="Search records, categories, custom fields, or attachments" class="mt-4 w-full rounded-xl border p-3">
     <p id="schoolRecordStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p>
     <div id="schoolRecordList" class="mt-4 space-y-3"></div>
+  </section>
+</div>
+
+<div id="tab-published-documents" class="admin-tab-content hidden mt-6 space-y-5">
+  <section class="rounded-2xl bg-white p-6 shadow">
+    <h2 class="text-xl font-bold">Publish Documents and Schemes</h2>
+    <p class="mt-1 text-sm text-gray-600">Share school documents or scheme files with signed-in students and staff. Up to 10 supported files, 20 MB each.</p>
+    <form id="publishDocumentForm" onsubmit="event.preventDefault(); publishDocuments();" class="mt-5 space-y-4">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="text-sm font-medium">Document title
+          <input id="publishedDocumentTitle" required maxlength="120" class="mt-1 w-full rounded-xl border p-3" placeholder="e.g. Term 2 Chemistry Scheme">
+        </label>
+        <label class="text-sm font-medium">Document type
+          <select id="publishedDocumentCategory" class="mt-1 w-full rounded-xl border p-3">
+            <option value="school">School document</option>
+            <option value="scheme">Scheme of work</option>
+          </select>
+        </label>
+      </div>
+      <label class="block text-sm font-medium">Description (optional)
+        <textarea id="publishedDocumentDescription" maxlength="2000" class="mt-1 w-full rounded-xl border p-3" rows="3" placeholder="Add details for students and staff"></textarea>
+      </label>
+      <div>
+        <label for="publishedDocumentFiles" class="block text-sm font-medium">Files</label>
+        <input id="publishedDocumentFiles" type="file" multiple required accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.rtf,.odt,.ods,.odp,.jpg,.jpeg,.png,.webp" onchange="updatePublishedDocumentFileNames()" class="mt-1 block w-full rounded-xl border p-3 text-sm">
+        <p id="publishedDocumentFileNames" class="mt-1 text-xs text-gray-600">No files selected. Supported: PDF, Word, Excel, PowerPoint, OpenDocument, CSV, text, RTF, and common images.</p>
+      </div>
+      <button id="publishDocumentsButton" type="submit" class="rounded-full bg-teal-700 px-6 py-3 font-bold text-white">Publish documents</button>
+    </form>
+    <p id="publishedDocumentStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p>
+  </section>
+  <section class="rounded-2xl bg-white p-6 shadow">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="text-xl font-bold">Published Documents</h2>
+        <p id="publishedDocumentCount" class="mt-1 text-sm text-gray-600" role="status">Documents load after admin login.</p>
+      </div>
+      <button type="button" onclick="loadPublishedDocuments()" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh list</button>
+    </div>
+    <div id="publishedDocumentList" class="mt-4 space-y-3"></div>
   </section>
 </div>
 

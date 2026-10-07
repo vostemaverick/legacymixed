@@ -9,6 +9,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
     import { getFirestore, collection, getDocs, doc, getDoc, updateDoc, addDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { getStorage, ref, getBlob } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4",
@@ -22,7 +23,9 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
+    const storage = getStorage(app);
     let students = [];
+    let publishedDocuments = [];
 
     function setStatus(elementId, message, state = "info") {
       const element = document.getElementById(elementId);
@@ -131,6 +134,100 @@
       }
     }
 
+    function renderPublishedDocuments(category, listId, emptyMessage) {
+      const list = document.getElementById(listId);
+      const documents = publishedDocuments.filter((item) =>
+        category === "scheme" ? item.category === "scheme" : item.category !== "scheme"
+      );
+      list.replaceChildren();
+      if (!documents.length) {
+        const empty = document.createElement("p");
+        empty.className = "rounded-xl border border-dashed p-4 text-center text-sm text-gray-500";
+        empty.textContent = emptyMessage;
+        list.appendChild(empty);
+        return;
+      }
+
+      documents.forEach((documentRecord) => {
+        const card = document.createElement("article");
+        card.className = "rounded-xl border p-4";
+        const title = document.createElement("h4");
+        title.className = "font-semibold";
+        title.textContent = documentRecord.title || "School document";
+        card.appendChild(title);
+        if (documentRecord.description) {
+          const description = document.createElement("p");
+          description.className = "mt-1 whitespace-pre-wrap text-sm text-gray-600";
+          description.textContent = documentRecord.description;
+          card.appendChild(description);
+        }
+        const files = document.createElement("div");
+        files.className = "mt-3 flex flex-wrap gap-2";
+        (documentRecord.files || []).forEach((file) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "rounded-full bg-blue-800 px-4 py-2 text-sm font-semibold text-white";
+          button.textContent = `Download ${file.name}`;
+          button.addEventListener("click", () => window.downloadPublishedFile(file, button));
+          files.appendChild(button);
+        });
+        card.appendChild(files);
+        list.appendChild(card);
+      });
+    }
+
+    async function loadPublishedDocuments() {
+      const status = document.getElementById("documentsStatus");
+      status.textContent = "Loading school documents...";
+      try {
+        const snapshot = await getDocs(collection(db, "publishedDocuments"));
+        publishedDocuments = snapshot.docs.map((documentSnapshot) => ({
+          id: documentSnapshot.id,
+          ...documentSnapshot.data()
+        }));
+        renderPublishedDocuments("school", "schoolDocumentsList", "No school documents have been published.");
+        renderPublishedDocuments("scheme", "schemeDocumentsList", "No scheme documents have been published.");
+        status.textContent = `${publishedDocuments.length} document${publishedDocuments.length === 1 ? "" : "s"} available.`;
+      } catch (error) {
+        console.error("Unable to load staff-facing documents:", error);
+        status.textContent = `Unable to load school documents: ${error.message}`;
+      }
+    }
+
+    window.refreshPublishedDocuments = async (button) => {
+      setButtonBusy(button, true, "Refreshing...");
+      try {
+        await loadPublishedDocuments();
+      } finally {
+        setButtonBusy(button, false);
+      }
+    };
+
+    window.downloadPublishedFile = async (file, button) => {
+      button.disabled = true;
+      const originalText = button.textContent;
+      button.textContent = "Downloading...";
+      try {
+        if (!auth.currentUser) throw new Error("Please sign in again to download this file.");
+        const blob = await getBlob(ref(storage, file.storagePath));
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = file.name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) {
+        console.error("Unable to download published school document:", error);
+        document.getElementById("documentsStatus").textContent =
+          `Unable to download ${file.name}: ${error.message}`;
+      } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    };
+
     window.loginStaff = async () => {
       const email = document.getElementById('email').value.trim();
       const password = document.getElementById('pass').value;
@@ -162,7 +259,7 @@
           document.getElementById('adminLink').classList.remove('hidden');
         }
 
-        await loadStudents();
+        await Promise.all([loadStudents(), loadPublishedDocuments()]);
       } catch (error) {
         console.error("Staff portal sign-in or initial load failed:", error);
         setStatus("loginStatus", `Unable to sign in or load the portal: ${error.message}`, "error");
@@ -372,6 +469,18 @@
         </form>
       </div>
     </div>
+
+    <section class="mt-6 rounded-2xl bg-white p-5 shadow">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h3 class="text-lg font-bold">School Documents and Schemes</h3>
+        <button type="button" onclick="refreshPublishedDocuments(this)" class="rounded-full bg-blue-800 px-4 py-2 text-xs font-bold text-white">Refresh documents</button>
+      </div>
+      <p id="documentsStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite">Documents load after staff login.</p>
+      <h4 class="mt-4 font-semibold">School documents</h4>
+      <div id="schoolDocumentsList" class="mt-2 space-y-3"></div>
+      <h4 class="mt-5 font-semibold">Schemes of work</h4>
+      <div id="schemeDocumentsList" class="mt-2 space-y-3"></div>
+    </section>
 
     <div class="grid md:grid-cols-2 gap-4 mt-6">
       <form id="schemeForm" onsubmit="event.preventDefault(); submitScheme();" class="bg-white rounded-2xl shadow p-5 space-y-3">
