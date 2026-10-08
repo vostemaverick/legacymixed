@@ -39,20 +39,21 @@
     .card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px} .card{padding:26px;border:1px solid var(--line);border-radius:9px;background:var(--white)}
     .card-number{width:42px;height:42px;display:grid;place-items:center;margin-bottom:18px;border-radius:50%;background:#edf3ee;color:var(--green);font-weight:700} .card h3{margin:0 0 9px;color:var(--green-dark);font-size:1.35rem} .card p{margin:0;color:var(--muted);font-size:0.96rem}
     .admissions{padding:76px 0} .admissions-panel{display:flex;align-items:center;justify-content:space-between;gap:28px;padding:38px;border-radius:12px;background:#f0f4ef}
+    .fees{padding:72px 0;background:var(--cream)} .fees-panel{padding:clamp(20px,4vw,38px);border:1px solid var(--line);border-radius:12px;background:var(--white)} .fee-table-wrap{overflow-x:auto;margin-top:22px} .fee-table{width:100%;border-collapse:collapse;text-align:left} .fee-table caption{padding:0 0 12px;color:var(--muted);text-align:left;font-size:0.9rem} .fee-table th,.fee-table td{padding:13px 16px;border-bottom:1px solid var(--line)} .fee-table thead{color:var(--white);background:var(--green-dark)} .fee-table tbody tr:last-child{font-weight:700;background:#f0f4ef} .fees-notes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin-top:28px} .fees-note{padding:20px;border-radius:8px;background:var(--cream)} .fees-note h3{margin:0 0 10px;color:var(--green-dark);font-size:1.2rem} .fees-note p{margin:6px 0;color:var(--muted)} .fees-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px} .fees-actions .button-secondary{border:1px solid var(--green);background:var(--white);color:var(--green);text-decoration:none}
     .notices{padding:60px 0;background:white} .notice-item{padding:16px;border-left:4px solid var(--green);background:var(--cream);margin-bottom:12px;border-radius:0 8px 8px 0}
     .contact{padding:70px 0;color:#e5eee8;background:var(--green-dark)} .contact-grid{display:grid;grid-template-columns:1fr 1fr;gap:50px} .contact h2{color:var(--white)} .contact .section-label{color:var(--gold)} .contact p{color:#cad8cf}
     .contact-details{display:grid;gap:16px;align-content:center} .contact-item{padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,0.16)} .contact-item strong{display:block;margin-bottom:3px;color:var(--gold);font-size:0.85rem;letter-spacing:0.04em;text-transform:uppercase} .contact-item span{color:var(--white)}
     .site-footer{padding:18px 20px;color:#cad8cf;background:#0b2a21;text-align:center;font-size:0.85rem}
-    @media (max-width:760px){.nav-wrap{flex-direction:column;align-items:flex-start;gap:12px;padding-block:15px}.nav-links{width:100%;flex-wrap:wrap;gap:10px}.welcome-grid,.contact-grid{grid-template-columns:1fr;gap:32px}.card-grid{grid-template-columns:1fr}.admissions-panel{flex-direction:column;align-items:flex-start;padding:28px}}
+    @media (max-width:760px){.nav-wrap{flex-direction:column;align-items:flex-start;gap:12px;padding-block:15px}.nav-links{width:100%;flex-wrap:wrap;gap:10px}.welcome-grid,.contact-grid{grid-template-columns:1fr;gap:32px}.card-grid{grid-template-columns:1fr}.fees-notes{grid-template-columns:1fr}.admissions-panel{flex-direction:column;align-items:flex-start;padding:28px}}
   </style>
 </head>
 <body>
-  <div class="announcement">Welcome to Legacy Mixed Secondary School - Portals Now Live! <a href="student-portal.html">Student Login</a></div>
+  <div class="announcement">ADMISSION ONGOING FORM 3 AND JUNIOR SECONDARY VACCANCIES AVAILABLE CALL 0796206783</div>
   <header class="site-header">
     <div class="container nav-wrap">
       <a class="brand" href="#home"><span class="brand-mark">L</span><span class="brand-name">Legacy Mixed Secondary<small>School</small></span></a>
       <nav class="nav-links" aria-label="Main navigation">
-        <a href="#about">About</a><a href="#academics">Academics</a><a href="#notices">Notices</a><a href="#contact">Contact</a>
+        <a href="#about">About</a><a href="#academics">Academics</a><a href="#fees">Fees</a><a href="#notices">Notices</a><a href="#contact">Contact</a>
         <a href="student-portal.html" class="portal-btn active">🎓 Student Portal</a>
         <a href="staff-portal.html" class="portal-btn">👨‍🏫 Staff Portal</a>
         <a href="admin-portal.html" class="portal-btn">🔐 Admin Portal</a>
@@ -93,6 +94,38 @@
           <article class="card"><div class="card-number">01</div><h3>Strong learning</h3><p>A supportive environment that helps learners build knowledge, good study habits, and confidence.</p></article>
           <article class="card"><div class="card-number">02</div><h3>Character and community</h3><p>Opportunities to practise responsibility, respect, teamwork, and care for others.</p></article>
           <article class="card"><div class="card-number">03</div><h3>Portals Access</h3><p>Students check results & fees. Staff upload marks and post notices. All functional and secure.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="fees" id="fees">
+      <div class="container">
+        <div class="section-heading"><p class="section-label">Plan for the school year</p><h2>Form 4 Fee Structure</h2><p>Fees are shown in KES as listed in the school fee schedule. Please contact the school to confirm the current year's charges before making payment.</p></div>
+        <div class="fees-panel">
+          <div class="fee-table-wrap">
+            <table class="fee-table">
+              <caption>Term-by-term charges</caption>
+              <thead><tr><th scope="col">Votehead</th><th scope="col">Term I</th><th scope="col">Term II</th><th scope="col">Term III</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">Fees</th><td>KES 7,500</td><td>KES 7,500</td><td>KES 7,500</td></tr>
+                <tr><th scope="row">Lunch</th><td>KES 3,000</td><td>KES 3,000</td><td>KES 2,000</td></tr>
+                <tr><th scope="row">Library</th><td>KES 1,000</td><td>—</td><td>—</td></tr>
+                <tr><th scope="row">Laboratory</th><td>KES 1,000</td><td>—</td><td>—</td></tr>
+                <tr><th scope="row">Maintenance</th><td>KES 500</td><td>—</td><td>—</td></tr>
+                <tr><th scope="row">Exams / K.C.S.E. logistics</th><td>KES 1,000</td><td>KES 1,000</td><td>KES 4,000</td></tr>
+                <tr><th scope="row">Total</th><td>KES 14,000</td><td>KES 11,500</td><td>KES 13,500</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="fees-note" style="margin:14px 0 0;color:var(--muted);font-size:0.88rem">A dash means no amount is listed for that votehead in the supplied schedule.</p>
+          <div class="fees-notes">
+            <div class="fees-note"><h3>One-time charges</h3><p>Admission: KES 1,000</p><p>Games uniform: KES 1,000</p><p>School ID: KES 500</p></div>
+            <div class="fees-note"><h3>Payment details</h3><p><strong>Family Bank account:</strong> 041000042397</p><p><strong>Account name:</strong> Legacy Mixed Secondary School</p><p><strong>Paybill:</strong> 222111 &nbsp; <strong>Account:</strong> 2463412</p><p><strong>Other levies, including Saturday tuition:</strong> Till 8996418</p></div>
+          </div>
+          <div class="fees-actions">
+            <a class="button" href="FEE%20structure%20f4.docx" download>Download fee structure document</a>
+            <a class="button button-secondary" href="https://wa.me/254796206783?text=Hello%2C%20please%20confirm%20the%20current%20Form%204%20fee%20structure">Confirm fees with the school</a>
+          </div>
         </div>
       </div>
     </section>
