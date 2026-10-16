@@ -6,8 +6,10 @@
       "README.md",
       "*.rules",
       "fee.jpeg",
+      ".git/**",
+      ".firebase/**",
+      ".venv/**",
       "functions/**",
-      "**/.*",
       "**/node_modules/**"
     ]
   },
