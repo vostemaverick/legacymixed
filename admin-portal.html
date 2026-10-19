@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>Admin - Legacy</title><script src="https://cdn.tailwindcss.com"></script>
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>Admin - Progressive Legacy School</title><script src="https://cdn.tailwindcss.com"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, sendPasswordResetEmail, createUserWithEmailAndPassword, deleteUser } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -928,7 +928,7 @@ window.showTab=(id)=>{ document.querySelectorAll('.admin-tab-content').forEach((
 window.logout=()=>signOut(auth).then(()=>location.reload());
 </script></head>
 <body class="bg-gray-100 min-h-screen">
-<nav class="bg-red-700 text-white p-4 flex justify-between"><span class="font-bold">🔐 LEGACY ADMIN</span><div class="flex gap-2"><a href="index.html" class="text-xs border px-3 py-1 rounded-full">Home</a><button onclick="logout()" class="text-xs bg-black px-3 py-1 rounded-full">Logout</button></div></nav>
+<nav class="bg-red-700 text-white p-4 flex justify-between"><span class="font-bold">🔐 PROGRESSIVE LEGACY ADMIN</span><div class="flex gap-2"><a href="index.html" class="text-xs border px-3 py-1 rounded-full">Home</a><button onclick="logout()" class="text-xs bg-black px-3 py-1 rounded-full">Logout</button></div></nav>
 
 <div id="loginBox" class="max-w-sm mx-auto mt-20 bg-white p-8 rounded-2xl shadow">
 <h2 class="font-bold text-xl">Admin Login</h2><p class="text-xs text-gray-500 mt-1">Principal / Admin only</p>
