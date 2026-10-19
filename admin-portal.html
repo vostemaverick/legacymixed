@@ -2,7 +2,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, sendPasswordResetEmail, createUserWithEmailAndPassword, deleteUser } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
@@ -619,6 +619,136 @@ window.updatePublishedDocumentFileNames = () => {
 
 let memberDirectory = [];
 
+function renderTeacherAssignments() {
+  const select = document.getElementById("assignmentTeacher");
+  if (!select) return;
+  const currentId = select.value;
+  const teachers = memberDirectory.filter((member) =>
+    member.memberType === "staff" && member.role === "teacher"
+  );
+  select.replaceChildren(new Option("Select a teacher", ""));
+  teachers.forEach((teacher) => {
+    select.add(new Option(`${teacher.values[1]} (${teacher.values[2]})`, teacher.memberId));
+  });
+  if (teachers.some((teacher) => teacher.memberId === currentId)) select.value = currentId;
+  renderSelectedTeacherAssignment();
+}
+
+function renderSelectedTeacherAssignment() {
+  const teacherId = document.getElementById("assignmentTeacher").value;
+  const teacher = memberDirectory.find((member) => member.memberId === teacherId && member.memberType === "staff");
+  document.getElementById("assignmentSubjects").value = teacher?.subjects?.join(", ") || "";
+  document.getElementById("assignmentClass").value = teacher?.classTeacherFor || "";
+}
+window.renderSelectedTeacherAssignment = renderSelectedTeacherAssignment;
+
+function renderStudentAssignments() {
+  const select = document.getElementById("assignmentStudent");
+  if (!select) return;
+  const currentId = select.value;
+  const students = memberDirectory.filter((member) => member.memberType === "students");
+  select.replaceChildren(new Option("Select a student", ""));
+  students.forEach((student) => {
+    select.add(new Option(`${student.values[1]} (${student.values[3] || student.memberId})`, student.memberId));
+  });
+  if (students.some((student) => student.memberId === currentId)) select.value = currentId;
+  renderSelectedStudentAssignment();
+}
+
+function renderSelectedStudentAssignment() {
+  const student = memberDirectory.find((member) =>
+    member.memberId === document.getElementById("assignmentStudent").value &&
+    member.memberType === "students"
+  );
+  document.getElementById("studentAssignmentSubjects").value = student?.subjects?.join(", ") || "";
+}
+window.renderSelectedStudentAssignment = renderSelectedStudentAssignment;
+
+window.saveStudentAssignment = async () => {
+  const studentId = document.getElementById("assignmentStudent").value;
+  const subjects = [...new Set(document.getElementById("studentAssignmentSubjects").value
+    .split(",").map((subject) => subject.trim()).filter(Boolean))];
+  const status = document.getElementById("studentAssignmentStatus");
+  const button = document.getElementById("saveStudentAssignmentButton");
+  if (!studentId) {
+    status.textContent = "Select a student.";
+    status.className = "mt-3 text-sm text-red-700";
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Saving...";
+  try {
+    await updateDoc(doc(db, "students", studentId), { subjects });
+    status.textContent = "Student subjects saved.";
+    status.className = "mt-3 text-sm text-green-700";
+    await loadMembers();
+  } catch (error) {
+    console.error("Unable to save student subject assignments:", error);
+    status.textContent = `Unable to save student subjects: ${error.message}`;
+    status.className = "mt-3 text-sm text-red-700";
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save subjects";
+  }
+};
+
+function studentUsername(name, admissionNumber) {
+  const slug = (value) => value.normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug(name)}-${slug(admissionNumber)}`;
+}
+
+function createStudentSetupCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const maxByte = Math.floor(256 / alphabet.length) * alphabet.length;
+  let code = "";
+  while (code.length < 16) {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    for (const byte of bytes) {
+      if (byte < maxByte) code += alphabet[byte % alphabet.length];
+      if (code.length === 16) break;
+    }
+  }
+  return code;
+}
+
+window.saveTeacherAssignment = async () => {
+  const teacherId = document.getElementById("assignmentTeacher").value;
+  const subjects = [...new Set(document.getElementById("assignmentSubjects").value
+    .split(",").map((subject) => subject.trim()).filter(Boolean))];
+  const classTeacherFor = document.getElementById("assignmentClass").value.trim();
+  const status = document.getElementById("assignmentStatus");
+  const button = document.getElementById("saveAssignmentButton");
+  if (!teacherId || (!subjects.length && !classTeacherFor)) {
+    status.textContent = "Select a teacher and assign at least one subject or class.";
+    status.className = "mt-3 text-sm text-red-700";
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Saving...";
+  try {
+    await updateDoc(doc(db, "staff", teacherId), {
+      role: "teacher",
+      subjects,
+      classTeacherFor
+    });
+    status.textContent = "Teacher assignments saved.";
+    status.className = "mt-3 text-sm text-green-700";
+    await Promise.all([loadMembers(), loadStaffMonitor()]);
+  } catch (error) {
+    console.error("Unable to save teacher assignments:", error);
+    status.textContent = `Unable to save teacher assignments: ${error.message}`;
+    status.className = "mt-3 text-sm text-red-700";
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save assignments";
+  }
+};
+
 function renderMembers(members, emptyMessage) {
   const body = document.getElementById("memberRows");
   body.replaceChildren();
@@ -680,10 +810,11 @@ window.loadMembers = async () => {
         return {
           memberId: memberDoc.id,
           memberType: "students",
+          subjects: Array.isArray(member.subjects) ? member.subjects : [],
           values: [
             "Student",
             member.name || "Unnamed student",
-            member.email || "",
+            member.loginName || member.contactEmail || (member.email?.endsWith("@students.legacy-secondary.invalid") ? "" : member.email) || "",
             member.adm || "",
             member.class || "",
             formatDate(member.createdAt)
@@ -696,6 +827,8 @@ window.loadMembers = async () => {
           memberId: memberDoc.id,
           memberType: "staff",
           role: (member.role || "").toLowerCase(),
+          subjects: Array.isArray(member.subjects) ? member.subjects : [],
+          classTeacherFor: member.classTeacherFor || "",
           values: [
             "Staff",
             member.name || "Unnamed staff member",
@@ -709,6 +842,8 @@ window.loadMembers = async () => {
     ].sort((a, b) => a.values[1].localeCompare(b.values[1]));
 
     window.filterMembers();
+    renderTeacherAssignments();
+    renderStudentAssignments();
   } catch (error) {
     console.error("Unable to load saved members:", error);
     memberDirectory = [];
@@ -736,7 +871,10 @@ window.removeMember = async (member) => {
     alert(`${memberType} removed.`);
   } catch (error) {
     console.error("Unable to remove member:", error);
-    alert(`Unable to remove ${memberType.toLowerCase()}: ${error.message}`);
+    const message = error.code === "functions/not-found"
+      ? "Member removal is not deployed for this Firebase project. Deploy the removeMember Cloud Function before retrying."
+      : error.message;
+    alert(`Unable to remove ${memberType.toLowerCase()}: ${message}`);
   }
 };
 
@@ -874,17 +1012,19 @@ window.loginAdmin = async () => {
   finally{ button.disabled=false; button.textContent="Login"; }
 }
 window.addStudent = async () => {
- const name=document.getElementById('sname').value.trim(); const adm=document.getElementById('sadm').value.trim(); const cls=document.getElementById('scls').value.trim(); const email=document.getElementById('semail').value.trim(); const pass=document.getElementById('spass').value; const fee=document.getElementById('sfee').value.trim();
+ const name=document.getElementById('sname').value.trim(); const adm=document.getElementById('sadm').value.trim(); const cls=document.getElementById('scls').value.trim(); const subjects=[...new Set(document.getElementById('ssubjects').value.split(",").map((subject)=>subject.trim()).filter(Boolean))]; const fee=document.getElementById('sfee').value.trim();
  const status=document.getElementById("studentAddStatus"); const button=document.getElementById("addStudentButton");
- if(!name||!email||!pass){ status.textContent="Enter the student name, email, and password."; status.className="text-sm text-red-700"; return; }
+ const loginName=studentUsername(name,adm);
+ if(!name||!adm||!loginName||loginName.startsWith("-")||loginName.endsWith("-")){ status.textContent="Enter the student name and a valid admission number."; status.className="text-sm text-red-700"; return; }
  if(fee && (!Number.isFinite(Number(fee)) || Number(fee)<0)){ status.textContent="Fee balance must be zero or a positive amount."; status.className="text-sm text-red-700"; return; }
  button.disabled=true; button.textContent="Saving...";
  let createdUser=null;
  try{
-   const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); createdUser=cred.user;
-   await setDoc(doc(db,"students",cred.user.uid),{name,adm,class:cls,feeBalance:fee || "0",meanGrade:"B+",email,createdAt:new Date()});
+   const setupCode=createStudentSetupCode(); const authEmail=`${loginName}@students.legacy-secondary.invalid`;
+   const cred=await createUserWithEmailAndPassword(secondaryAuth,authEmail,setupCode); createdUser=cred.user;
+   await setDoc(doc(db,"students",cred.user.uid),{name,adm,class:cls,subjects,feeBalance:fee || "0",meanGrade:"B+",email:authEmail,loginName,mustSetPassword:true,createdAt:new Date()});
    document.getElementById("tab-student").reset();
-   status.textContent=`Student added: ${email}`; status.className="text-sm text-green-700";
+   status.textContent=`Student added. Give the student these sign-in details once: Username: ${loginName} | One-time setup code: ${setupCode}. The student must choose a new password after signing in.`; status.className="text-sm text-green-700";
    await loadMembers();
  }catch(e){
    console.error("Unable to add student:",e);
@@ -903,7 +1043,7 @@ window.addStaff = async () => {
  let createdUser=null;
  try{
    const cred=await createUserWithEmailAndPassword(secondaryAuth,email,pass); createdUser=cred.user;
-   await setDoc(doc(db,"staff",cred.user.uid),{name,email,role,createdAt:new Date()});
+   await setDoc(doc(db,"staff",cred.user.uid),{name,email,role,subjects:[],classTeacherFor:"",createdAt:new Date()});
    document.getElementById("tab-staff").reset();
    status.textContent=`Staff member added: ${email}`; status.className="text-sm text-green-700";
    await Promise.all([loadMembers(), loadStaffMonitor()]);
@@ -942,11 +1082,40 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
 
 <div id="dash" class="hidden max-w-5xl mx-auto p-4 mt-4">
 <h2 class="text-xl font-bold">Welcome <span id="aName"></span></h2>
-<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-school-records')" class="bg-green-700 text-white px-5 py-2 rounded-full text-sm">School Records</button><button onclick="showTab('tab-published-documents')" class="bg-teal-700 text-white px-5 py-2 rounded-full text-sm">Publish Documents</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
+<div class="flex gap-2 mt-6 flex-wrap"><button onclick="showTab('tab-student')" class="bg-blue-800 text-white px-5 py-2 rounded-full text-sm">+ Student</button><button onclick="showTab('tab-staff')" class="bg-yellow-500 text-blue-900 font-bold px-5 py-2 rounded-full text-sm">+ Staff</button><button onclick="showTab('tab-teacher-assignments')" class="bg-purple-700 text-white px-5 py-2 rounded-full text-sm">Teacher Assignments</button><button onclick="showTab('tab-student-assignments')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Student Subjects</button><button onclick="showTab('tab-school-records')" class="bg-green-700 text-white px-5 py-2 rounded-full text-sm">School Records</button><button onclick="showTab('tab-published-documents')" class="bg-teal-700 text-white px-5 py-2 rounded-full text-sm">Publish Documents</button><button onclick="showTab('tab-members')" class="bg-indigo-700 text-white px-5 py-2 rounded-full text-sm">Saved Members</button><button onclick="showTab('tab-monitor')" class="bg-red-700 text-white px-5 py-2 rounded-full text-sm">Monitor Staff</button><button onclick="showTab('tab-settings')" class="bg-gray-800 text-white px-5 py-2 rounded-full text-sm">⚙️ My Password</button></div>
 
-<form id="tab-student" onsubmit="event.preventDefault(); addStudent();" class="admin-tab-content bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><input id="sname" required placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" placeholder="Adm No" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="semail" required type="email" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="spass" required minlength="6" type="password" placeholder="Password (min 6 characters)" class="w-full border p-3 rounded-xl"><input id="sfee" type="number" min="0" step="0.01" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button id="addStudentButton" type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button><p id="studentAddStatus" class="text-sm" role="status" aria-live="polite"></p></form>
+<form id="tab-student" onsubmit="event.preventDefault(); addStudent();" class="admin-tab-content bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Student</h2><p class="text-sm text-gray-600">A username and one-time setup code will be generated. The student chooses their own password at first login.</p><input id="sname" required placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="sadm" required placeholder="Admission number" class="w-full border p-3 rounded-xl"><input id="scls" placeholder="Class" class="w-full border p-3 rounded-xl"><input id="ssubjects" required placeholder="Subjects (comma-separated)" class="w-full border p-3 rounded-xl"><input id="sfee" type="number" min="0" step="0.01" placeholder="Fee Balance" class="w-full border p-3 rounded-xl"><button id="addStudentButton" type="submit" class="w-full bg-blue-800 text-white py-3 rounded-full font-bold">Save Student</button><p id="studentAddStatus" class="text-sm" role="status" aria-live="polite"></p></form>
 
 <form id="tab-staff" onsubmit="event.preventDefault(); addStaff();" class="admin-tab-content hidden bg-white p-6 rounded-2xl max-w-md mt-6 shadow space-y-3"><h2 class="font-bold">Add Staff</h2><input id="tname" required placeholder="Full Name" class="w-full border p-3 rounded-xl"><input id="trole" required placeholder="Role: principal, admin, teacher" class="w-full border p-3 rounded-xl"><input id="temail" required type="email" placeholder="Email" class="w-full border p-3 rounded-xl"><input id="tpass" required minlength="6" type="password" placeholder="Password (min 6 characters)" class="w-full border p-3 rounded-xl"><button id="addStaffButton" type="submit" class="w-full bg-blue-900 text-white py-3 rounded-full font-bold">Save Staff</button><p id="staffAddStatus" class="text-sm" role="status" aria-live="polite"></p></form>
+
+<form id="tab-teacher-assignments" onsubmit="event.preventDefault(); saveTeacherAssignment();" class="admin-tab-content hidden mt-6 max-w-2xl space-y-4 rounded-2xl bg-white p-6 shadow">
+  <h2 class="text-xl font-bold">Assign Teacher Subjects and Class</h2>
+  <p class="text-sm text-gray-600">Choose a staff profile, enter subjects separated by commas, and optionally assign a class as Class Teacher.</p>
+  <label class="block text-sm font-medium">Teacher
+    <select id="assignmentTeacher" required onchange="renderSelectedTeacherAssignment()" class="mt-1 w-full rounded-xl border p-3"></select>
+  </label>
+  <label class="block text-sm font-medium">Subjects handled
+    <input id="assignmentSubjects" maxlength="1000" placeholder="Mathematics, English, Biology" class="mt-1 w-full rounded-xl border p-3">
+  </label>
+  <label class="block text-sm font-medium">Class Teacher for (optional)
+    <input id="assignmentClass" maxlength="80" placeholder="e.g. Form 2 East" class="mt-1 w-full rounded-xl border p-3">
+  </label>
+  <button id="saveAssignmentButton" type="submit" class="rounded-full bg-purple-700 px-5 py-3 font-bold text-white">Save assignments</button>
+  <p id="assignmentStatus" class="text-sm text-gray-600" role="status" aria-live="polite"></p>
+</form>
+
+<form id="tab-student-assignments" onsubmit="event.preventDefault(); saveStudentAssignment();" class="admin-tab-content hidden mt-6 max-w-2xl space-y-4 rounded-2xl bg-white p-6 shadow">
+  <h2 class="text-xl font-bold">Assign Student Subjects</h2>
+  <p class="text-sm text-gray-600">Assign the subjects each student takes. Students can view this list in their portal, and teachers can enter marks only for students assigned their subject.</p>
+  <label class="block text-sm font-medium">Student
+    <select id="assignmentStudent" required onchange="renderSelectedStudentAssignment()" class="mt-1 w-full rounded-xl border p-3"></select>
+  </label>
+  <label class="block text-sm font-medium">Subjects
+    <input id="studentAssignmentSubjects" maxlength="1000" placeholder="Mathematics, English, Biology" class="mt-1 w-full rounded-xl border p-3">
+  </label>
+  <button id="saveStudentAssignmentButton" type="submit" class="rounded-full bg-indigo-700 px-5 py-3 font-bold text-white">Save subjects</button>
+  <p id="studentAssignmentStatus" class="text-sm text-gray-600" role="status" aria-live="polite"></p>
+</form>
 
 <div id="tab-school-records" class="admin-tab-content hidden mt-6 space-y-5">
   <section class="rounded-2xl bg-white p-6 shadow">
@@ -1047,7 +1216,7 @@ window.logout=()=>signOut(auth).then(()=>location.reload());
   </div>
   <input id="memberSearch" type="search" oninput="filterMembers()" placeholder="Search by name, email, admission number, class, or role" class="mb-4 w-full rounded-xl border p-3">
   <table class="w-full text-left text-sm">
-    <thead class="bg-gray-100"><tr><th class="p-3">Type</th><th class="p-3">Name</th><th class="p-3">Email</th><th class="p-3">Admission No. / Role</th><th class="p-3">Class</th><th class="p-3">Added</th><th class="p-3">Action</th></tr></thead>
+    <thead class="bg-gray-100"><tr><th class="p-3">Type</th><th class="p-3">Name</th><th class="p-3">Email / Username</th><th class="p-3">Admission No. / Role</th><th class="p-3">Class</th><th class="p-3">Added</th><th class="p-3">Action</th></tr></thead>
     <tbody id="memberRows"></tbody>
   </table>
 </div>

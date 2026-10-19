@@ -1,8 +1,8 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>Student Portal - Progressive Legacy School</title><script src="https://cdn.tailwindcss.com"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-import { getFirestore, doc, getDoc, collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, signOut, updatePassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import { getFirestore, doc, getDoc, collection, getDocs, query, where, updateDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getStorage, ref, getBlob } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 const firebaseConfig = { apiKey: "AIzaSyDcHrvQdD3wyEFUrwka0mZuAehJPtzsag4", authDomain: "legacy-secondary.firebaseapp.com", projectId: "legacy-secondary", storageBucket: "legacy-secondary.firebasestorage.app", messagingSenderId: "929548927280", appId: "1:929548927280:web:f565195bf94b04ae5ec8f5" };
 const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app); const storage = getStorage(app);
@@ -13,18 +13,52 @@ function setStatus(elementId, message, error = false) {
  status.className = `mt-3 text-sm ${error ? "text-red-700" : "text-gray-600"}`;
 }
 window.login = async () => {
- const e=document.getElementById('email').value.trim(); const p=document.getElementById('pass').value;
+ const identifier=document.getElementById('studentLogin').value.trim(); const p=document.getElementById('pass').value;
  const button=document.getElementById("loginButton");
- if(!e||!p){ setStatus("loginStatus","Enter your school email and password.",true); return; }
+ if(!identifier||!p){ setStatus("loginStatus","Enter your username or school email and password.",true); return; }
+ const email=identifier.includes("@") ? identifier : `${identifier.toLowerCase()}@students.legacy-secondary.invalid`;
  button.disabled=true; button.textContent="Signing in..."; setStatus("loginStatus","Checking your student account...");
- try{ const c=await signInWithEmailAndPassword(auth,e,p); const s=await getDoc(doc(db,"students",c.user.uid));
+ try{ const c=await signInWithEmailAndPassword(auth,email,p); const s=await getDoc(doc(db,"students",c.user.uid));
  if(!s.exists()){ await signOut(auth); setStatus("loginStatus","No student profile is linked to this account. Contact the school administrator.",true); return;} const d=s.data();
  document.getElementById('loginBox').classList.add('hidden'); document.getElementById('dash').classList.remove('hidden');
  document.getElementById('sName').textContent=d.name || c.user.email; document.getElementById('sAdm').textContent=d.adm || "Not recorded"; document.getElementById('sClass').textContent=d.class || "Not recorded"; document.getElementById('sBal').textContent="KES "+(d.feeBalance ?? "Not recorded"); document.getElementById('sMean').textContent=d.meanGrade || "N/A";
- await Promise.all([loadResults(c.user.uid), loadPublishedDocuments()]);
+ const subjects=Array.isArray(d.subjects) ? [...new Set(d.subjects.map((subject)=>String(subject).trim()).filter(Boolean))] : [];
+ document.getElementById("sSubjects").textContent=subjects.length ? subjects.join(", ") : "No subjects assigned yet. Contact the school.";
+ const mustSetPassword=d.mustSetPassword===true;
+ document.getElementById("passwordSetupSection").classList.toggle("hidden",!mustSetPassword);
+ document.getElementById("studentContent").classList.toggle("hidden",mustSetPassword);
+ if(!mustSetPassword) await Promise.all([loadResults(c.user.uid), loadPublishedDocuments()]);
  }catch(err){console.error("Student portal Firebase login failed:",err); setStatus("loginStatus",`Unable to sign in or load your student profile: ${err.message}`,true)}
  finally{button.disabled=false;button.textContent="Login"}
 }
+window.setStudentPassword=async()=>{
+ const password=document.getElementById("studentNewPassword").value;
+ const confirmPassword=document.getElementById("studentConfirmPassword").value;
+ const button=document.getElementById("studentPasswordButton");
+ if(password.length<8){setStatus("studentPasswordStatus","Choose a password with at least 8 characters.",true);return}
+ if(password!==confirmPassword){setStatus("studentPasswordStatus","The passwords do not match.",true);return}
+ if(!auth.currentUser){setStatus("studentPasswordStatus","Please sign in again before setting your password.",true);return}
+ button.disabled=true;button.textContent="Saving...";
+ let passwordUpdated=false;
+ try{
+  await updatePassword(auth.currentUser,password);
+  passwordUpdated=true;
+  await updateDoc(doc(db,"students",auth.currentUser.uid),{mustSetPassword:false});
+  document.getElementById("studentNewPassword").value="";
+  document.getElementById("studentConfirmPassword").value="";
+  document.getElementById("passwordSetupSection").classList.add("hidden");
+  document.getElementById("studentContent").classList.remove("hidden");
+  await Promise.all([loadResults(auth.currentUser.uid),loadPublishedDocuments()]);
+  setStatus("studentPasswordStatus","Your password is set. Keep it private.",false);
+ }catch(error){
+  console.error("Unable to complete student password setup:",error);
+  const message=passwordUpdated
+   ? `Your password changed, but portal setup could not be completed: ${error.message}. Sign in again with your new password and retry, or contact the school.`
+   : `Unable to change your password: ${error.message}`;
+  setStatus("studentPasswordStatus",message,true);
+ }
+ finally{button.disabled=false;button.textContent="Set my password"}
+};
 function renderPublishedDocuments(category, listId, emptyMessage) {
  const list=document.getElementById(listId);
  const documents=publishedDocuments.filter((item)=>category==="scheme" ? item.category==="scheme" : item.category!=="scheme");
@@ -108,16 +142,20 @@ async function loadResults(studentId){
  const body=document.getElementById('resultRows');
  body.replaceChildren(); setStatus("resultStatus","Loading your results...");
  try{
-  const resultsQuery=query(collection(db,"results"),where("studentId","==",studentId));
-  const snapshot=await getDocs(resultsQuery);
-  const resultDocs=snapshot.docs.sort((a,b)=>{
-   const dateOf=(result)=>result.submittedAt && typeof result.submittedAt.toDate==="function" ? result.submittedAt.toDate().getTime() : 0;
-   return dateOf(b.data())-dateOf(a.data());
+  const [legacySnapshot,marksSnapshot]=await Promise.all([
+   getDocs(query(collection(db,"results"),where("studentId","==",studentId))),
+   getDocs(query(collection(db,"marks"),where("student_id","==",studentId)))
+  ]);
+  const results=[
+   ...legacySnapshot.docs.map((resultDoc)=>{const result=resultDoc.data();return{subject:result.subject,term:result.term,exam:"",score:`${result.score ?? ""} / ${result.maxScore ?? ""}`,date:result.submittedAt}}),
+   ...marksSnapshot.docs.map((markDoc)=>{const mark=markDoc.data();return{subject:mark.subject,term:mark.term,exam:mark.exam_type,score:`${mark.marks ?? ""} / 100`,date:mark.submitted_at}})
+  ].sort((a,b)=>{
+   const dateOf=(date)=>date && typeof date.toDate==="function" ? date.toDate().getTime() : date instanceof Date ? date.getTime() : 0;
+   return dateOf(b.date)-dateOf(a.date);
   });
-  resultDocs.forEach((resultDoc)=>{
-   const result=resultDoc.data();
+  results.forEach((result)=>{
    const row=document.createElement('tr');
-   [result.subject,result.term,`${result.score ?? ""} / ${result.maxScore ?? ""}`].forEach((value)=>{
+   [result.subject,result.term,result.exam,result.score].forEach((value)=>{
     const cell=document.createElement('td');
     cell.className="border-b p-3";
     cell.textContent=value ?? "";
@@ -125,23 +163,23 @@ async function loadResults(studentId){
    });
    body.appendChild(row);
   });
-  if(snapshot.empty){
+  if(!results.length){
    const row=document.createElement('tr');
    const cell=document.createElement('td');
-   cell.colSpan=3;
+   cell.colSpan=4;
    cell.className="p-4 text-center text-gray-500";
    cell.textContent="No results have been posted yet.";
    row.appendChild(cell);
    body.appendChild(row);
    setStatus("resultStatus","Your results are up to date.");
   }else{
-   setStatus("resultStatus",`Showing ${snapshot.size} result${snapshot.size===1?"":"s"}, newest first.`);
+   setStatus("resultStatus",`Showing ${results.length} result${results.length===1?"":"s"}, newest first.`);
   }
  }catch(error){
   console.error("Unable to load student results:",error);
   const row=document.createElement('tr');
   const cell=document.createElement('td');
-  cell.colSpan=3;
+  cell.colSpan=4;
   cell.className="p-4 text-center text-red-700";
   cell.textContent="Results could not be loaded. Use Refresh results to try again.";
   row.appendChild(cell);
@@ -157,5 +195,7 @@ window.refreshResults=async(button)=>{
 window.logout=()=>signOut(auth).then(()=>location.reload()).catch((error)=>setStatus("resultStatus",`Unable to sign out: ${error.message}`,true));
 </script></head>
 <body class="bg-gray-50"><nav class="bg-blue-800 text-white p-4 flex justify-between"><a href="index.html" class="font-bold">PROGRESSIVE LEGACY SCHOOL</a><a href="staff-portal.html" class="text-xs border px-3 py-1 rounded-full">Staff Portal</a></nav>
-<div id="loginBox" class="max-w-sm mx-auto mt-20 bg-white p-8 rounded-2xl shadow"><h2 class="font-bold text-xl text-blue-800">Student Portal</h2><p class="text-xs text-gray-500 mt-1">Login with your school email</p><input id="email" type="email" placeholder="student@legacy.sc.ke" class="w-full border p-3 mt-5 rounded-xl"><input id="pass" type="password" placeholder="Password" class="w-full border p-3 mt-3 rounded-xl"><button id="loginButton" onclick="login()" class="w-full bg-blue-800 text-white py-3 mt-5 rounded-full font-bold">Login</button><p id="loginStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p><p class="text-[11px] text-center mt-3">Contact admin: <a href="tel:0796206783" class="text-blue-800 underline">0796 206 783</a></p></div>
-<div id="dash" class="hidden max-w-3xl mx-auto mt-8 p-6"><div class="flex justify-between items-center"><div><h2 class="text-2xl font-bold">Hello, <span id="sName"></span></h2><p class="text-sm">Admission No: <span id="sAdm"></span> | Class: <span id="sClass"></span></p></div><button onclick="logout()" class="text-sm text-red-600">Logout</button></div><div class="grid grid-cols-2 md:grid-cols-3 gap-4 mt-6"><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Fee Balance</p><p id="sBal" class="font-bold text-lg mt-1"></p></div><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Mean Grade</p><p id="sMean" class="font-bold text-lg mt-1"></p></div><div class="bg-blue-800 text-white p-5 rounded-2xl shadow"><p class="text-xs">Contact School</p><a href="https://wa.me/254796206783" class="font-bold text-sm underline">WhatsApp 0796 206 783</a></div></div><section class="bg-white p-5 mt-6 rounded-2xl shadow"><div class="flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold text-lg">School Documents and Schemes</h3><button onclick="refreshPublishedDocuments(this)" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh documents</button></div><p id="documentsStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite">Documents load after student login.</p><h4 class="mt-4 font-semibold">School documents</h4><div id="schoolDocumentsList" class="mt-2 space-y-3"></div><h4 class="mt-5 font-semibold">Schemes of work</h4><div id="schemeDocumentsList" class="mt-2 space-y-3"></div></section><section class="bg-white p-5 mt-6 rounded-2xl shadow"><div class="flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold text-lg">Subject Results</h3><button onclick="refreshResults(this)" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh results</button></div><p id="resultStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite"></p><div class="overflow-x-auto mt-3"><table class="w-full text-sm text-left"><thead><tr class="bg-gray-100"><th class="p-3">Subject</th><th class="p-3">Term</th><th class="p-3">Score</th></tr></thead><tbody id="resultRows"></tbody></table></div></section></div></body></html>
+<div id="loginBox" class="max-w-sm mx-auto mt-20 bg-white p-8 rounded-2xl shadow"><h2 class="font-bold text-xl text-blue-800">Student Portal</h2><p class="text-xs text-gray-500 mt-1">Sign in with your assigned username or existing school email</p><input id="studentLogin" type="text" autocomplete="username" placeholder="Username or school email" class="w-full border p-3 mt-5 rounded-xl"><input id="pass" type="password" autocomplete="current-password" placeholder="Password or one-time setup code" class="w-full border p-3 mt-3 rounded-xl"><button id="loginButton" onclick="login()" class="w-full bg-blue-800 text-white py-3 mt-5 rounded-full font-bold">Login</button><p id="loginStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p><p class="text-[11px] text-center mt-3">Contact admin: <a href="tel:0796206783" class="text-blue-800 underline">0796 206 783</a></p></div>
+<div id="dash" class="hidden max-w-3xl mx-auto mt-8 p-6"><div class="flex justify-between items-center"><div><h2 class="text-2xl font-bold">Hello, <span id="sName"></span></h2><p class="text-sm">Admission No: <span id="sAdm"></span> | Class: <span id="sClass"></span></p></div><button onclick="logout()" class="text-sm text-red-600">Logout</button></div>
+<section id="passwordSetupSection" class="hidden bg-white p-5 mt-6 rounded-2xl shadow"><h3 class="font-bold text-lg">Choose your password</h3><p class="mt-1 text-sm text-gray-600">This is required before you can access your student portal. Do not share your new password.</p><input id="studentNewPassword" type="password" autocomplete="new-password" minlength="8" placeholder="New password (at least 8 characters)" class="mt-4 w-full rounded-xl border p-3"><input id="studentConfirmPassword" type="password" autocomplete="new-password" minlength="8" placeholder="Confirm new password" class="mt-3 w-full rounded-xl border p-3"><button id="studentPasswordButton" onclick="setStudentPassword()" class="mt-4 rounded-full bg-blue-800 px-5 py-3 font-bold text-white">Set my password</button><p id="studentPasswordStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite"></p></section>
+<div id="studentContent"><div class="grid grid-cols-2 md:grid-cols-3 gap-4 mt-6"><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Fee Balance</p><p id="sBal" class="font-bold text-lg mt-1"></p></div><div class="bg-white p-5 rounded-2xl shadow"><p class="text-xs text-gray-500">Mean Grade</p><p id="sMean" class="font-bold text-lg mt-1"></p></div><div class="bg-blue-800 text-white p-5 rounded-2xl shadow"><p class="text-xs">Contact School</p><a href="https://wa.me/254796206783" class="font-bold text-sm underline">WhatsApp 0796 206 783</a></div></div><section class="bg-white p-5 mt-6 rounded-2xl shadow"><h3 class="font-bold text-lg">My Subjects</h3><p id="sSubjects" class="mt-2 text-sm text-gray-700"></p></section><section class="bg-white p-5 mt-6 rounded-2xl shadow"><div class="flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold text-lg">School Documents and Schemes</h3><button onclick="refreshPublishedDocuments(this)" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh documents</button></div><p id="documentsStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite">Documents load after student login.</p><h4 class="mt-4 font-semibold">School documents</h4><div id="schoolDocumentsList" class="mt-2 space-y-3"></div><h4 class="mt-5 font-semibold">Schemes of work</h4><div id="schemeDocumentsList" class="mt-2 space-y-3"></div></section><section class="bg-white p-5 mt-6 rounded-2xl shadow"><div class="flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold text-lg">Subject Results</h3><button onclick="refreshResults(this)" class="rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Refresh results</button></div><p id="resultStatus" class="mt-2 text-sm text-gray-600" role="status" aria-live="polite"></p><div class="overflow-x-auto mt-3"><table class="w-full text-sm text-left"><thead><tr class="bg-gray-100"><th class="p-3">Subject</th><th class="p-3">Term</th><th class="p-3">Exam</th><th class="p-3">Score</th></tr></thead><tbody id="resultRows"></tbody></table></div></section></div></div></body></html>

@@ -15,14 +15,39 @@ service cloud.firestore {
         get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.role in ['admin', 'principal'];
     }
 
+    function hasAssignedSubject(subject) {
+      return isStaff() &&
+        get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.role == 'teacher' &&
+        get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.subjects is list &&
+        subject in get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.subjects;
+    }
+
+    function isClassTeacher(studentClass) {
+      return isStaff() &&
+        get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.classTeacherFor == studentClass;
+    }
+
+    function isStudentReady(studentId) {
+      return exists(/databases/$(database)/documents/students/$(studentId)) &&
+        get(/databases/$(database)/documents/students/$(studentId)).data.mustSetPassword != true;
+    }
+
+    function studentHasSubject(studentId, studentClass, subject) {
+      return exists(/databases/$(database)/documents/students/$(studentId)) &&
+        get(/databases/$(database)/documents/students/$(studentId)).data.class == studentClass &&
+        get(/databases/$(database)/documents/students/$(studentId)).data.subjects is list &&
+        subject in get(/databases/$(database)/documents/students/$(studentId)).data.subjects;
+    }
+
     function isSchoolMember() {
       return signedIn() &&
-        (exists(/databases/$(database)/documents/students/$(request.auth.uid)) ||
+        (isStudentReady(request.auth.uid) ||
           exists(/databases/$(database)/documents/staff/$(request.auth.uid)));
     }
 
     match /staff/{staffId} {
-      allow read: if signedIn() && (request.auth.uid == staffId || isAdmin());
+      allow read: if signedIn() &&
+        (request.auth.uid == staffId || isAdmin() || (isStaff() && resource.data.role == 'teacher'));
       allow create, update, delete: if isAdmin();
     }
 
@@ -32,7 +57,12 @@ service cloud.firestore {
       allow create, delete: if isAdmin();
       allow update: if isAdmin() ||
         (isStaff() &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['meanGrade', 'feeBalance']));
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['meanGrade', 'feeBalance'])) ||
+        (signedIn() &&
+          request.auth.uid == studentId &&
+          resource.data.mustSetPassword == true &&
+          request.resource.data.mustSetPassword == false &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mustSetPassword']));
     }
 
     match /schemesOfWork/{schemeId} {
@@ -43,8 +73,38 @@ service cloud.firestore {
 
     match /results/{resultId} {
       allow read: if signedIn() &&
-        (isAdmin() || resource.data.studentId == request.auth.uid);
-      allow create: if isStaff();
+        (isAdmin() || (resource.data.studentId == request.auth.uid && isStudentReady(request.auth.uid)));
+      allow create: if isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    match /marks/{markId} {
+      allow read: if signedIn() &&
+        (isAdmin() || (resource.data.student_id == request.auth.uid && isStudentReady(request.auth.uid)) ||
+          resource.data.teacher_id == request.auth.uid || isClassTeacher(resource.data.class));
+      allow create: if hasAssignedSubject(request.resource.data.subject) &&
+        request.resource.data.teacher_id == request.auth.uid &&
+        request.resource.data.student_id is string &&
+        request.resource.data.class is string &&
+        studentHasSubject(request.resource.data.student_id, request.resource.data.class, request.resource.data.subject) &&
+        request.resource.data.term is string &&
+        request.resource.data.exam_type is string &&
+        request.resource.data.marks is number &&
+        request.resource.data.marks >= 0 &&
+        request.resource.data.marks <= 100;
+      allow update, delete: if isAdmin();
+    }
+
+    match /markSubmissions/{submissionId} {
+      allow read: if signedIn() &&
+        (isAdmin() || resource.data.teacherId == request.auth.uid ||
+          isClassTeacher(resource.data.class));
+      allow create: if hasAssignedSubject(request.resource.data.subject) &&
+        request.resource.data.teacherId == request.auth.uid &&
+        request.resource.data.class is string &&
+        request.resource.data.term is string &&
+        request.resource.data.examType is string &&
+        request.resource.data.studentCount is int;
       allow update, delete: if isAdmin();
     }
 

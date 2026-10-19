@@ -5,10 +5,22 @@
   <meta name="viewport" content="width=device-width">
   <title>Staff Portal - Progressive Legacy School</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    #printReport{display:none}
+    @media print{
+      body.printing-report *{visibility:hidden}
+      body.printing-report #printReport,body.printing-report #printReport *{visibility:visible}
+      body.printing-report #printReport{display:block!important;position:absolute;left:0;top:0;width:100%;padding:16mm}
+      body.printing-class-list *{visibility:hidden}
+      body.printing-class-list #classMarkListSection,body.printing-class-list #classMarkListSection *{visibility:visible}
+      body.printing-class-list #classMarkListSection{display:block!important;position:absolute;left:0;top:0;width:100%;padding:12mm}
+      body.printing-class-list #classMarkList button{display:none}
+    }
+  </style>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-    import { getFirestore, collection, getDocs, doc, getDoc, updateDoc, addDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { getFirestore, collection, getDocs, doc, getDoc, updateDoc, addDoc, setDoc, writeBatch, query, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
     import { getStorage, ref, getBlob } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
     const firebaseConfig = {
@@ -26,6 +38,9 @@
     const storage = getStorage(app);
     let students = [];
     let publishedDocuments = [];
+    let staffProfile = null;
+    let currentReportRows = [];
+    let currentReportDetails = null;
 
     function setStatus(elementId, message, state = "info") {
       const element = document.getElementById(elementId);
@@ -125,13 +140,291 @@
         students.forEach(({ id, data }) => {
           studentSelect.add(new Option(`${data.name || "Unnamed student"} (${data.adm || id})`, id));
         });
+        const studentClasses = [...new Set(students.map(({ data }) => String(data.class || "").trim()).filter(Boolean))].sort();
+        const classOptions = document.getElementById("studentClasses");
+        classOptions.replaceChildren(...studentClasses.map((studentClass) => new Option(studentClass, studentClass)));
         renderStudents();
+        renderMarkEntryStudents();
         setStatus("studentStatus", `Loaded ${students.length} student records.`, "success");
       } catch (error) {
         console.error("Unable to load student records:", error);
         setStatus("studentStatus", `Unable to load students: ${error.message}`, "error");
         return false;
       }
+    }
+
+    function assignedSubjects() {
+      return Array.isArray(staffProfile?.subjects)
+        ? [...new Set(staffProfile.subjects.map((subject) => String(subject).trim()).filter(Boolean))]
+        : [];
+    }
+
+    function renderMarkEntryStudents() {
+      const body = document.getElementById("markEntryRows");
+      if (!body) return;
+      const studentClass = document.getElementById("marksClass").value.trim();
+      const subject = document.getElementById("marksSubject").value.trim();
+      const classStudents = students.filter(({ data }) =>
+        String(data.class || "").trim() === studentClass &&
+        Array.isArray(data.subjects) &&
+        data.subjects.some((assignedSubject) => String(assignedSubject).trim() === subject)
+      );
+      body.replaceChildren();
+      classStudents.forEach(({ id, data }) => {
+        const row = document.createElement("tr");
+        row.className = "border-b";
+        const nameCell = document.createElement("td");
+        nameCell.className = "p-3";
+        nameCell.textContent = data.name || "Unnamed student";
+        const admissionCell = document.createElement("td");
+        admissionCell.className = "p-3";
+        admissionCell.textContent = data.adm || "";
+        const markCell = document.createElement("td");
+        markCell.className = "p-3";
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = "0";
+        input.max = "100";
+        input.step = "any";
+        input.required = true;
+        input.dataset.studentId = id;
+        input.className = "w-24 rounded border p-2";
+        input.setAttribute("aria-label", `Marks out of 100 for ${data.name || "student"}`);
+        markCell.appendChild(input);
+        row.append(nameCell, admissionCell, markCell);
+        body.appendChild(row);
+      });
+      if (!classStudents.length) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 3;
+        cell.className = "p-4 text-center text-gray-500";
+        cell.textContent = !studentClass
+          ? "Enter a class to load its students."
+          : subject
+            ? "No students in this class are assigned this subject."
+            : "Select an assigned subject to load students.";
+        row.appendChild(cell);
+        body.appendChild(row);
+      }
+      document.getElementById("markEntryCount").textContent =
+        `${classStudents.length} student${classStudents.length === 1 ? "" : "s"} in ${studentClass || "selected class"}.`;
+    }
+    window.renderMarkEntryStudents = renderMarkEntryStudents;
+
+    async function loadClassTeacherResults() {
+      if (!staffProfile?.classTeacherFor) return;
+      const studentClass = String(staffProfile.classTeacherFor).trim();
+      const term = document.getElementById("classResultsTerm").value.trim();
+      const examType = document.getElementById("classResultsExamType").value.trim();
+      const status = document.getElementById("classTeacherStatus");
+      if (!term || !examType) {
+        status.textContent = "Enter a term and exam type before receiving results.";
+        status.className = "mt-2 text-sm text-red-700";
+        return;
+      }
+      document.getElementById("generateClassReportButton").disabled = true;
+      document.getElementById("generateSlipsButton").disabled = true;
+      document.getElementById("classMarkListSection").classList.add("hidden");
+      status.textContent = "Loading results submitted for your class...";
+      try {
+        const [marksSnapshot, submissionsSnapshot, teachersSnapshot] = await Promise.all([
+          getDocs(query(collection(db, "marks"), where("class", "==", studentClass))),
+          getDocs(query(collection(db, "markSubmissions"), where("class", "==", studentClass))),
+          getDocs(query(collection(db, "staff"), where("role", "==", "teacher")))
+        ]);
+        const submissions = submissionsSnapshot.docs.map((item) => item.data())
+          .filter((item) => item.term === term && item.examType === examType);
+        const expected = teachersSnapshot.docs.flatMap((teacherDoc) => {
+          const teacher = teacherDoc.data();
+          const subjects = Array.isArray(teacher.subjects) ? teacher.subjects : [];
+          return subjects.map((subject) => ({
+            teacherId: teacherDoc.id,
+            subject: String(subject).trim()
+          })).filter((item) => item.subject);
+        }).filter((item, index, all) =>
+          all.findIndex((other) => other.teacherId === item.teacherId && other.subject === item.subject) === index
+        );
+        const pending = expected.filter((expectedSubmission) =>
+          !submissions.some((submission) =>
+            submission.teacherId === expectedSubmission.teacherId &&
+            submission.subject === expectedSubmission.subject
+          )
+        );
+        renderClassSubmissions(submissions, pending);
+        currentReportRows = marksSnapshot.docs.map((item) => item.data())
+          .filter((item) => item.term === term && item.exam_type === examType);
+        currentReportDetails = { studentClass, term, examType };
+        status.textContent = expected.length === 0
+          ? "No teacher subject assignments were found. Ask the administrator to assign subjects."
+          : pending.length
+          ? `${submissions.length} of ${expected.length} assigned subject submissions received. Waiting for ${pending.map((item) => item.subject).join(", ")}.`
+          : `${submissions.length} subject submission${submissions.length === 1 ? "" : "s"} received. Reports are ready.`;
+        status.className = "mt-2 text-sm text-gray-600";
+        const reportsReady = expected.length > 0 && pending.length === 0 && currentReportRows.length > 0;
+        document.getElementById("generateClassReportButton").disabled = !reportsReady;
+        document.getElementById("generateSlipsButton").disabled = !reportsReady;
+      } catch (error) {
+        console.error("Unable to load class teacher results:", error);
+        status.textContent = `Unable to load class results: ${error.message}`;
+        status.className = "mt-2 text-sm text-red-700";
+      }
+    }
+
+    function renderClassSubmissions(submissions, pending) {
+      const list = document.getElementById("classSubmissionList");
+      list.replaceChildren();
+      submissions.forEach((submission) => {
+        const item = document.createElement("li");
+        item.className = "rounded-lg border p-3 text-sm";
+        item.textContent = `${submission.subject} — submitted by ${submission.teacherName || submission.teacherEmail || "teacher"} (${submission.studentCount || 0} students)`;
+        list.appendChild(item);
+      });
+      pending.forEach((submission) => {
+        const item = document.createElement("li");
+        item.className = "rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm";
+        item.textContent = `${submission.subject} — awaiting submission`;
+        list.appendChild(item);
+      });
+      if (!submissions.length && !pending.length) {
+        const item = document.createElement("li");
+        item.className = "rounded-lg border border-dashed p-3 text-sm text-gray-500";
+        item.textContent = "No subject teachers have been assigned yet.";
+        list.appendChild(item);
+      }
+    }
+
+    function buildPrintReport(title, details, rows, studentId = null) {
+      const report = document.getElementById("printReport");
+      report.replaceChildren();
+      const studentsById = new Map(students.map((student) => [student.id, student.data]));
+      const grouped = new Map();
+      rows.forEach((row) => {
+        const list = grouped.get(row.student_id) || [];
+        list.push(row);
+        grouped.set(row.student_id, list);
+      });
+      const summary = Array.from(grouped, ([id, marks]) => {
+        const student = studentsById.get(id) || {};
+        const total = marks.reduce((sum, mark) => sum + Number(mark.marks), 0);
+        return { id, student, marks, total, mean: marks.length ? total / marks.length : 0 };
+      }).sort((a, b) => b.total - a.total || String(a.student.name || "").localeCompare(String(b.student.name || "")));
+      summary.forEach((item, index) => {
+        item.rank = index > 0 && item.total === summary[index - 1].total
+          ? summary[index - 1].rank
+          : index + 1;
+      });
+      const displayedSummary = studentId ? summary.filter((item) => item.id === studentId) : summary;
+      const heading = document.createElement("h1");
+      heading.className = "text-2xl font-bold";
+      heading.textContent = title;
+      const subtitle = document.createElement("p");
+      subtitle.className = "mt-2";
+      subtitle.textContent = `${details.studentClass} · ${details.term} · ${details.examType}`;
+      report.append(heading, subtitle);
+      displayedSummary.forEach((item) => {
+        const article = document.createElement("article");
+        article.className = "mt-6 break-inside-avoid";
+        const studentHeading = document.createElement("h2");
+        studentHeading.className = "text-lg font-bold";
+        studentHeading.textContent = `${item.student.name || "Student"}${item.student.adm ? ` (${item.student.adm})` : ""}`;
+        article.appendChild(studentHeading);
+        const table = document.createElement("table");
+        table.className = "mt-2 w-full border-collapse text-sm";
+        table.innerHTML = "<thead><tr><th class='border p-2 text-left'>Subject</th><th class='border p-2'>Marks</th></tr></thead>";
+        const tbody = document.createElement("tbody");
+        item.marks.sort((a, b) => String(a.subject).localeCompare(String(b.subject))).forEach((mark) => {
+          const row = document.createElement("tr");
+          const subjectCell = document.createElement("td");
+          subjectCell.className = "border p-2";
+          subjectCell.textContent = mark.subject;
+          const marksCell = document.createElement("td");
+          marksCell.className = "border p-2 text-center";
+          marksCell.textContent = String(mark.marks);
+          row.append(subjectCell, marksCell);
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        const totals = document.createElement("p");
+        totals.className = "mt-2 font-semibold";
+        totals.textContent = `Total: ${item.total} · Mean: ${item.mean.toFixed(2)} · Rank: ${item.rank} of ${summary.length}`;
+        article.append(table, totals);
+        report.appendChild(article);
+      });
+    }
+
+    function printReport(title, details, rows, studentId = null) {
+      buildPrintReport(title, details, rows, studentId);
+      document.body.classList.add("printing-report");
+      window.addEventListener("afterprint", () => document.body.classList.remove("printing-report"), { once: true });
+      window.print();
+    }
+
+    function renderClassMarkList() {
+      if (!currentReportDetails || !currentReportRows.length) return;
+      const byStudent = new Map();
+      currentReportRows.forEach((mark) => {
+        const studentMarks = byStudent.get(mark.student_id) || [];
+        studentMarks.push(mark);
+        byStudent.set(mark.student_id, studentMarks);
+      });
+      const summary = students
+        .filter((item) => String(item.data.class || "").trim() === currentReportDetails.studentClass)
+        .map(({ id: studentId, data: student }) => {
+        const marks = byStudent.get(studentId) || [];
+        const total = marks.reduce((sum, mark) => sum + Number(mark.marks), 0);
+        return { studentId, student, marks, total, mean: marks.length ? total / marks.length : 0 };
+      }).sort((a, b) => b.total - a.total || String(a.student.name || "").localeCompare(String(b.student.name || "")));
+      summary.forEach((item, index) => {
+        item.rank = index > 0 && item.total === summary[index - 1].total
+          ? summary[index - 1].rank
+          : index + 1;
+      });
+      buildPrintReport("Class Mark List", currentReportDetails, currentReportRows);
+      const classReport = document.getElementById("classMarkList");
+      classReport.replaceChildren();
+      document.querySelector("#classMarkListSection h4").textContent =
+        `Class Mark List — ${currentReportDetails.studentClass}, ${currentReportDetails.term}, ${currentReportDetails.examType}`;
+      const table = document.createElement("table");
+      table.className = "w-full text-left text-sm";
+      const subjects = [...new Set(currentReportRows.map((row) => row.subject))].sort();
+      const head = document.createElement("thead");
+      const headingRow = document.createElement("tr");
+      ["Rank", "Student", "ADM", ...subjects, "Total", "Mean", "Result Slip"].forEach((label) => {
+        const cell = document.createElement("th");
+        cell.className = "p-2";
+        cell.textContent = label;
+        headingRow.appendChild(cell);
+      });
+      head.appendChild(headingRow);
+      table.appendChild(head);
+      const body = document.createElement("tbody");
+      summary.forEach((item) => {
+        const marksBySubject = new Map(item.marks.map((mark) => [mark.subject, mark.marks]));
+        const row = document.createElement("tr");
+        row.className = "border-t";
+        [String(item.rank), item.student.name || "Student", item.student.adm || "", ...subjects.map((subject) => String(marksBySubject.get(subject) ?? "—")), String(item.total), item.mean.toFixed(2)].forEach((value) => {
+          const cell = document.createElement("td");
+          cell.className = "p-2";
+          cell.textContent = value;
+          row.appendChild(cell);
+        });
+        const actionCell = document.createElement("td");
+        actionCell.className = "p-2";
+        const printButton = document.createElement("button");
+        printButton.type = "button";
+        printButton.className = "rounded bg-blue-800 px-3 py-1 text-xs text-white";
+        printButton.textContent = "Print slip";
+        printButton.addEventListener("click", () =>
+          printReport("Individual Result Slip", currentReportDetails, currentReportRows, item.studentId)
+        );
+        actionCell.appendChild(printButton);
+        row.appendChild(actionCell);
+        body.appendChild(row);
+      });
+      table.appendChild(body);
+      classReport.appendChild(table);
+      document.getElementById("classMarkListSection").classList.remove("hidden");
     }
 
     function renderPublishedDocuments(category, listId, emptyMessage) {
@@ -252,9 +545,23 @@
 
         document.getElementById('loginBox').classList.add('hidden');
         document.getElementById('dash').classList.remove('hidden');
-        document.getElementById('tName').textContent = snapshot.data().name || credential.user.email || "Staff member";
-
-        const role = String(snapshot.data().role || "").trim().toLowerCase();
+        staffProfile = snapshot.data();
+        const profileName = staffProfile.name || credential.user.email || "Staff member";
+        const role = String(staffProfile.role || "").trim().toLowerCase();
+        document.getElementById('tName').textContent = profileName;
+        document.getElementById("staffEmail").textContent = credential.user.email || staffProfile.email || "";
+        document.getElementById("staffRole").textContent =
+          staffProfile.classTeacherFor ? `${role || "Staff"} · Class Teacher` : role || "Staff";
+        const subjects = assignedSubjects();
+        document.getElementById("staffSubjects").textContent = subjects.length ? subjects.join(", ") : "No subjects assigned yet.";
+        const subjectSelect = document.getElementById("marksSubject");
+        subjectSelect.replaceChildren(new Option("Select an assigned subject", ""));
+        subjects.forEach((subject) => subjectSelect.add(new Option(subject, subject)));
+        document.getElementById("markEntrySection").classList.toggle("hidden", !subjects.length || ["admin", "principal"].includes(role));
+        document.getElementById("classTeacherSection").classList.toggle("hidden", !staffProfile.classTeacherFor);
+        document.getElementById("classTeacherClass").textContent = staffProfile.classTeacherFor || "";
+        document.getElementById("studentManagementSection").classList.toggle("hidden", !["admin", "principal"].includes(role));
+        document.getElementById("resultForm").classList.toggle("hidden", !["admin", "principal"].includes(role));
         if (role === "principal" || role === "admin") {
           document.getElementById('adminLink').classList.remove('hidden');
         }
@@ -266,6 +573,107 @@
       } finally {
         setButtonBusy(button, false);
       }
+    };
+
+    window.submitMarks = async () => {
+      const subject = document.getElementById("marksSubject").value;
+      const studentClass = document.getElementById("marksClass").value.trim();
+      const term = document.getElementById("marksTerm").value.trim();
+      const examType = document.getElementById("marksExamType").value.trim();
+      const markInputs = Array.from(document.querySelectorAll("#markEntryRows input[data-student-id]"));
+      if (!staffProfile || !assignedSubjects().includes(subject) || !studentClass || !term || !examType || !markInputs.length) {
+        setStatus("marksStatus", "Choose an assigned subject, class, term and exam, then enter marks for the class.", "error");
+        return;
+      }
+      const marks = markInputs.map((input) => ({
+        studentId: input.dataset.studentId,
+        marks: input.value.trim() ? Number(input.value) : NaN
+      }));
+      if (marks.some((item) => !Number.isFinite(item.marks) || item.marks < 0 || item.marks > 100)) {
+        setStatus("marksStatus", "Enter a mark from 0 to 100 for every student.", "error");
+        return;
+      }
+      if (marks.length > 450) {
+        setStatus("marksStatus", "This class has more than 450 students. Ask the administrator to split the submission.", "error");
+        return;
+      }
+      const submissionId = encodeURIComponent([auth.currentUser.uid, studentClass, subject, term, examType].join("|"));
+      const submissionRef = doc(db, "markSubmissions", submissionId);
+      const button = document.getElementById("submitMarksButton");
+      setButtonBusy(button, true, "Submitting...");
+      try {
+        const priorSubmissions = await getDocs(query(
+          collection(db, "markSubmissions"),
+          where("teacherId", "==", auth.currentUser.uid)
+        ));
+        if (priorSubmissions.docs.some((submission) => {
+          const data = submission.data();
+          return data.class === studentClass && data.subject === subject &&
+            data.term === term && data.examType === examType;
+        })) {
+          throw new Error("You have already submitted this subject for this class, term and exam.");
+        }
+        const batch = writeBatch(db);
+        marks.forEach(({ studentId, marks: score }) => {
+          const markId = encodeURIComponent([auth.currentUser.uid, studentId, subject, studentClass, term, examType].join("|"));
+          batch.set(doc(db, "marks", markId), {
+            student_id: studentId,
+            subject,
+            class: studentClass,
+            term,
+            exam_type: examType,
+            marks: score,
+            teacher_id: auth.currentUser.uid,
+            teacher_name: staffProfile.name || "",
+            teacher_email: auth.currentUser.email || "",
+            submitted_at: new Date()
+          });
+        });
+        batch.set(submissionRef, {
+          teacherId: auth.currentUser.uid,
+          teacherName: staffProfile.name || "",
+          teacherEmail: auth.currentUser.email || "",
+          subject,
+          class: studentClass,
+          term,
+          examType,
+          studentCount: marks.length,
+          submittedAt: new Date()
+        });
+        await batch.commit();
+        setStatus("marksStatus", "Marks submitted to the Class Teacher successfully.", "success");
+        document.getElementById("marksEntryForm").reset();
+        renderMarkEntryStudents();
+      } catch (error) {
+        console.error("Unable to submit marks:", error);
+        setStatus("marksStatus", `Unable to submit marks: ${error.message}`, "error");
+      } finally {
+        setButtonBusy(button, false);
+      }
+    };
+
+    window.refreshClassResults = async (button) => {
+      setButtonBusy(button, true, "Receiving...");
+      try {
+        await loadClassTeacherResults();
+      } finally {
+        setButtonBusy(button, false);
+      }
+    };
+
+    window.generateClassMarkList = () => renderClassMarkList();
+
+    window.printClassMarkList = () => {
+      if (!currentReportDetails || !currentReportRows.length) return;
+      renderClassMarkList();
+      document.body.classList.add("printing-class-list");
+      window.addEventListener("afterprint", () => document.body.classList.remove("printing-class-list"), { once: true });
+      window.print();
+    };
+
+    window.generateResultSlips = () => {
+      if (!currentReportDetails || !currentReportRows.length) return;
+      printReport("Individual Result Slips", currentReportDetails, currentReportRows);
     };
 
     window.submitScheme = async () => {
@@ -424,14 +832,23 @@
   <div id="dash" class="hidden max-w-6xl mx-auto mt-6 p-4">
     <div class="flex justify-between items-center flex-wrap gap-2">
       <div>
-        <h2 class="text-2xl font-bold">Teacher <span id="tName"></span></h2>
+        <h2 class="text-2xl font-bold">Welcome <span id="tName"></span></h2>
         <a id="adminLink" href="admin-portal.html" class="hidden mt-2 inline-block bg-red-600 text-white px-4 py-2 rounded-full text-xs font-bold">🔐 ADMIN PANEL - Add Students/Staff</a>
       </div>
       <a href="index.html" class="text-sm">Home</a>
     </div>
 
+    <section class="mt-5 rounded-2xl bg-white p-5 shadow">
+      <h3 class="font-bold">Staff profile</h3>
+      <dl class="mt-3 grid gap-3 text-sm sm:grid-cols-3">
+        <div><dt class="font-semibold text-gray-500">Email</dt><dd id="staffEmail" class="mt-1"></dd></div>
+        <div><dt class="font-semibold text-gray-500">Role</dt><dd id="staffRole" class="mt-1"></dd></div>
+        <div><dt class="font-semibold text-gray-500">Subjects handled</dt><dd id="staffSubjects" class="mt-1"></dd></div>
+      </dl>
+    </section>
+
     <div class="grid md:grid-cols-3 gap-4 mt-6">
-      <div class="md:col-span-2 bg-white rounded-2xl shadow p-5">
+      <div id="studentManagementSection" class="hidden md:col-span-2 bg-white rounded-2xl shadow p-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 class="font-bold">Students</h3>
@@ -469,6 +886,66 @@
         </form>
       </div>
     </div>
+
+    <section id="markEntrySection" class="hidden mt-6 rounded-2xl bg-white p-5 shadow">
+      <div>
+        <h3 class="text-lg font-bold">Enter Subject Marks</h3>
+        <p class="mt-1 text-sm text-gray-600">Enter marks out of 100 for your assigned subject, then submit them to the Class Teacher.</p>
+      </div>
+      <form id="marksEntryForm" onsubmit="event.preventDefault(); submitMarks();" class="mt-4 space-y-4">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <label class="text-sm font-medium">Assigned subject
+            <select id="marksSubject" required onchange="renderMarkEntryStudents()" class="mt-1 w-full rounded-xl border p-3"></select>
+          </label>
+          <label class="text-sm font-medium">Class
+            <input id="marksClass" list="studentClasses" required maxlength="80" oninput="renderMarkEntryStudents()" placeholder="e.g. Form 2 East" class="mt-1 w-full rounded-xl border p-3">
+            <datalist id="studentClasses"></datalist>
+          </label>
+          <label class="text-sm font-medium">Term
+            <input id="marksTerm" required maxlength="80" placeholder="e.g. Term 1, 2026" class="mt-1 w-full rounded-xl border p-3">
+          </label>
+          <label class="text-sm font-medium">Exam type
+            <input id="marksExamType" required maxlength="80" placeholder="e.g. Mid-term" class="mt-1 w-full rounded-xl border p-3">
+          </label>
+        </div>
+        <p id="markEntryCount" class="text-sm text-gray-600" role="status">Enter a class to load its students.</p>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-gray-100"><tr><th class="p-3">Student</th><th class="p-3">Admission No.</th><th class="p-3">Marks / 100</th></tr></thead>
+            <tbody id="markEntryRows"></tbody>
+          </table>
+        </div>
+        <button id="submitMarksButton" type="submit" class="rounded-full bg-blue-900 px-5 py-3 font-bold text-white">Submit Marks to Class Teacher</button>
+        <p id="marksStatus" class="text-sm text-gray-600" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section id="classTeacherSection" class="hidden mt-6 rounded-2xl bg-white p-5 shadow">
+      <h3 class="text-lg font-bold">Receive Results from other teachers</h3>
+      <p class="mt-1 text-sm text-gray-600">Assigned class: <strong id="classTeacherClass"></strong></p>
+      <div class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+        <label class="text-sm font-medium">Term
+          <input id="classResultsTerm" required maxlength="80" placeholder="e.g. Term 1, 2026" class="mt-1 w-full rounded-xl border p-3">
+        </label>
+        <label class="text-sm font-medium">Exam type
+          <input id="classResultsExamType" required maxlength="80" placeholder="e.g. Mid-term" class="mt-1 w-full rounded-xl border p-3">
+        </label>
+        <button type="button" onclick="refreshClassResults(this)" class="self-end rounded-full bg-blue-800 px-4 py-3 text-sm font-bold text-white">Receive / Refresh</button>
+      </div>
+      <p id="classTeacherStatus" class="mt-3 text-sm text-gray-600" role="status" aria-live="polite">Choose the term and exam to view submissions.</p>
+      <ul id="classSubmissionList" class="mt-3 grid gap-2 sm:grid-cols-2"></ul>
+      <div class="mt-4 flex flex-wrap gap-3">
+        <button id="generateClassReportButton" type="button" onclick="generateClassMarkList()" disabled class="rounded-full bg-blue-900 px-5 py-3 font-bold text-white disabled:opacity-50">Generate Class Mark List</button>
+        <button id="generateSlipsButton" type="button" onclick="generateResultSlips()" disabled class="rounded-full bg-indigo-800 px-5 py-3 font-bold text-white disabled:opacity-50">Generate Result Slips</button>
+      </div>
+      <section id="classMarkListSection" class="hidden mt-5 overflow-x-auto">
+        <h4 class="mb-3 font-bold">Class Mark List</h4>
+        <div id="classMarkList"></div>
+        <button type="button" onclick="printClassMarkList()" class="mt-4 rounded-full bg-blue-800 px-4 py-2 text-sm font-bold text-white">Print / Save Class Mark List as PDF</button>
+      </section>
+    </section>
+
+    <section id="printReport" aria-label="Printable result report"></section>
 
     <section class="mt-6 rounded-2xl bg-white p-5 shadow">
       <div class="flex flex-wrap items-center justify-between gap-3">
